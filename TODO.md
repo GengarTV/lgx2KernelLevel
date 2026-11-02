@@ -6,7 +6,7 @@ This file tracks planned features, technical design notes, and future experiment
 
 ## Current Milestone: Field Testing `v0.1.0` (1080p60 Baseline)
 - [x] Verify probe, cold bootstrap, V4L2 video (`1080p60 YUYV`), and ALSA audio (`48 kHz S16_LE`) in QEMU/KVM CachyOS VM (`07ca:4710`).
-- [ ] Field-test bare-metal performance, frame pacing, and audio sync on a secondary physical Linux machine (laptop) over USB 3.0 Micro-B SuperSpeed.
+- [ ] Field-test bare-metal performance, frame pacing, and audio sync on a secondary physical Linux machine (laptop) (When I can find my god damn extra USB 3.0 A to Micro-B SuperSpeed cable! I REALLY don't want to untangle my cable management from my primary production rig).
 - [ ] Field-test on primary production gaming rig.
 
 ---
