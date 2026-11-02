@@ -11,6 +11,32 @@ This file tracks planned features, technical design notes, and future experiment
 
 ---
 
+## Planned Feature: Dynamic ALSA Audio Sample Rate (`44.1 kHz` / `48 kHz` / `32 kHz`)
+
+Currently, [`kernel/gc550-audio.c`](kernel/gc550-audio.c) hardcodes `SNDRV_PCM_RATE_48000`. However, HDMI sources (such as CD players, PS1/PS2/PS3 consoles playing Red Book CD audio, retro scalers, or PCs configured for `44.1 kHz`) can output `44.1 kHz`, `48 kHz`, or `32 kHz` LPCM audio over HDMI.
+
+### 1. Hardware Evidence (`ADV7604` RX + `ADV7511` TX)
+1. **EDID Audio Capabilities:**
+   - The `ADV7604` EDID advertises 2-channel LPCM at `32 kHz`, `44.1 kHz`, and `48 kHz`.
+2. **Incoming Audio Rate Detection (`ADV7604` HDMI Map `0x34`):**
+   - The `ADV7604` extracts the HDMI Audio Clock Regeneration (`N` / `CTS` in `HDMI 0x5B..0x5F`) and IEC 60958 Channel Status bits (`HDMI 0x36..0x3A`, where `0x39` bits `3:0` encode the exact sample frequency: `0x0 = 44.1 kHz`, `0x2 = 48 kHz`, `0x3 = 32 kHz`, `0x8 = 88.2 kHz`, `0xA = 96 kHz`).
+   - Additionally, the USB stream's per-frame audio payload length (`[00 FF FF 58] [BE32 len]`) directly reflects the sample rate relative to frame rate (e.g., at `60 fps`: `3,200 bytes` = `48 kHz`, `2,940 bytes` = `44.1 kHz`).
+3. **HDMI Passthrough Transmitter (`ADV7511` `0x3D`):**
+   - As noted in [`PROTOCOL.md`](PROTOCOL.md), the bootstrap programs the `ADV7511` Audio Clock Regeneration `N` register (`0x01..0x03`) with `0x001880` (`6272`, the HDMI standard `N` for `44.1 kHz`) and then `0x001800` (`6144`, the HDMI standard `N` for `48 kHz`).
+   - When the input sample rate changes, `ADV7511` registers `0x01..0x03` must also be updated so the HDMI passthrough monitor doesn't lose audio sync.
+
+### 2. Implementation Steps (Post Field-Testing)
+- **Step 1 — Read Active HDMI Audio Rate in `gc550-cmd.c`:**
+  - Read `ADV7604` `HDMI 0x39` (IEC 60958 Channel Status sample rate bits) and `HDMI 0x5B..0x5D` (`N` value) during `gc550_log_signal_status()` (and periodic status polling), storing `dev->audio_rate` (`32000`, `44100`, or `48000`, defaulting to `48000` when unlocked).
+- **Step 2 — Update `ADV7511` Passthrough `N` Register on Rate Change:**
+  - When `dev->audio_rate` changes between `44.1 kHz`, `48 kHz`, and `32 kHz`, write the matching 20-bit `N` value (`6272` for `44.1 kHz`, `6144` for `48 kHz`, `4096` for `32 kHz`) to `ADV7511` (`0x3D`) registers `0x01..0x03`.
+- **Step 3 — Dynamic ALSA Rate Constraints in `gc550-audio.c`:**
+  - Expand `gc550_pcm_hw.rates` to `SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000` (`rate_min = 32000`, `rate_max = 48000`).
+  - In `gc550_pcm_open()`, constrain `runtime->hw.rate_min = runtime->hw.rate_max = dev->audio_rate` (and `runtime->hw.rates = snd_pcm_rate_to_rate_bit(dev->audio_rate)`) so PipeWire / PulseAudio / OBS automatically negotiates the exact sample rate of the connected HDMI source.
+  - If the HDMI source changes audio sample rate while an ALSA stream is already running, call `snd_pcm_stop_xrun(substream)` so PipeWire/OBS cleanly re-opens and re-negotiates the new sample rate instead of playing pitch-shifted audio (the "chipmunk" or "slow-mo" effect).
+
+---
+
 ## Planned Feature: Multi-Resolution / Low-Resolution Support (`720p`, `576p`, `480p`, `640x480`)
 
 Upstream [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) lists `Low resolution(?) support [ ]` in its TODO. Below is the technical investigation and implementation plan for adding lower-resolution support to `gc550.ko` once `v0.1.0` bare-metal field testing is complete.
