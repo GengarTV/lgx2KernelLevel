@@ -153,6 +153,7 @@ If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for 
 ## Documentation Index & Repository Structure
 
 - **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** — Solutions for missing kernel headers, Clang/GCC errors, Secure Boot, USB 2.0 fallback, HDCP black screens, and OBS audio.
+- **[`TODO.md`](TODO.md)** — Project roadmap and technical plan for multi-resolution (`720p` / `480p` / `576p`) support.
 - **[`PROTOCOL.md`](PROTOCOL.md)** — Deep-dive USB 3.0 bulk protocol, BT.1120 SAV/EAV markers, and I2C register documentation (by `@ChrisAJS`).
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — Driver architecture, hardware safety rules (`AT88SC`), VM testing workflow, and register table format.
 - **[`CHANGELOG.md`](CHANGELOG.md)** — Release history and notable changes.
@@ -165,6 +166,7 @@ If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for 
 ├── Makefile                 # Out-of-tree kernel module Makefile (GCC & Clang/LLVM auto-detect)
 ├── PKGBUILD                 # Arch Linux / CachyOS pacman package build script (avermedia-gc550-dkms)
 ├── PROTOCOL.md              # USB 3.0 protocol & hardware specification (by @ChrisAJS)
+├── TODO.md                  # Roadmap & technical design notes (including low-resolution support)
 ├── TROUBLESHOOTING.md       # Common build, USB, video, and audio troubleshooting guide
 ├── dkms.conf                # DKMS configuration
 ├── install.sh               # Smart distro-aware installer & uninstaller script
