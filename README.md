@@ -2,7 +2,12 @@
 
 > **Fork Notice & Credits:** This repository is a Linux kernel-level fork of [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) by **Chris Sawczuk ([@ChrisAJS](https://github.com/ChrisAJS))** and contributors. Building directly upon their USB 3.0 protocol reverse-engineering, [`PROTOCOL.md`](PROTOCOL.md) specification, and hardware bootstrap research, this project implements a **native Linux kernel driver (`V4L2` + `ALSA`)** for the **AVerMedia Live Gamer Extreme (GC550, `USB ID 07ca:4710` / `07ca:0550`)**.
 
-PLEASE also note that this kernel module is under HEAVY development (so heavy, in fact, I have not tried it outside of a VM yet, but I CAN confirm it works in QEMU running a CachyOS VM) and, like MANY projects on GitHub, comes with NO WARRANTY and NO SUPPORT! 
+PLEASE also note that this kernel module is under HEAVY development (so heavy, in fact, I have not tried it outside of a VM yet, but I CAN confirm it works in QEMU running a CachyOS VM) and, like MANY projects on GitHub, comes with NO WARRANTY and NO SUPPORT!
+
+Q: Why make a kernel module if a userspace driver exists? 
+A; Well, good question. The long answer is that I had Google Antigravity make me a kernel module; it based its work on Chris Sawczuk's work without my prior knowledge, resulting in two potentially equal things. Of course, I had Antigravity properly credit everyone involved in the project, but on further reflection, that wasn't enough, so I forked his repo and moved my kernel module to his fork, properly crediting his work.
+Q: If it was a "mistake", why keep it at all?
+A: I spent tokens on this, and logically there should be performance benefits of having the module in the kernel instead of userspace. Poor kernel modules CAN start race conditions, leading to an unstable kernel, more or less breaking your system, so as I said above **PROCEED AT YOUR OWN RISK**
 
 ---
 
@@ -17,7 +22,7 @@ Instead of requiring a background `libusb` daemon and `v4l2loopback`, `gc550.ko`
   - Demultiplexes embedded HDMI LPCM stereo audio (`48 kHz`, `16-bit Little-Endian`) directly from USB Bulk Endpoint `0x83 IN` into an ALSA capture card (automatically picked up by PipeWire / PulseAudio).
 - **Complete Hardware Wake-Up & Passthrough Support**:
   - Programs the internal **ADV7604** HDMI receiver (including 1080p60 EDID RAM), **ADV7511** HDMI passthrough transmitter, **TLV320AIC3x** analog audio codec, **Lattice ECP3** FPGA, and **PCA9539A** GPIO expander over the FX3 USB-to-I2C bridge (`EP 0x01 OUT` / `EP 0x81 IN`).
-  - Automatically configures the ADV7604 input color space (`IO 0x02`) to match RGB or YCbCr HDMI sources and resets picture brightness/contrast adjustments to neutral.
+  - Automatically configures the ADV7604 input colour space (`IO 0x02`) to match RGB or YCbCr HDMI sources and resets picture brightness/contrast adjustments to neutral.
   - **AT88SC CryptoMemory Protection**: Completely omits and blocks proprietary anti-clone authentication replays (`opcodes 0x05..0x07`), ensuring hardware attempt counters remain untouched (`0xFF`).
 - **Stream Resilience**:
   - **Cross-URB Marker Straddle Reassembly**: Tracks partial `[00 FF FF]` SAV/EAV/Audio markers across USB transfer boundaries so frames never drop or misalign.
@@ -107,7 +112,7 @@ In **OBS Studio**:
 ## Credits & Upstream Links
 
 - **Chris Sawczuk ([@ChrisAJS](https://github.com/ChrisAJS))** and contributors to [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace):
-  - Reverse-engineered the USB-to-I2C bridge, the GC550/GC551 initialization sequences, the BT.1120 SAV/EAV framing checksums, the ADV7604 automatic color-space fix, the 16 KiB FX3 DMA swap behavior, and the AT88SC CryptoMemory anti-clone protection documented in [`PROTOCOL.md`](PROTOCOL.md).
+  - Reverse-engineered the USB-to-I2C bridge, the GC550/GC551 initialisation sequences, the BT.1120 SAV/EAV framing checksums, the ADV7604 automatic colour-space fix, the 16 KiB FX3 DMA swap behaviour, and the AT88SC CryptoMemory anti-clone protection documented in [`PROTOCOL.md`](PROTOCOL.md).
 - **Linux Kernel Media Maintainers**:
   - Authors of the upstream `adv7604` and `adv7511` drivers.
 
