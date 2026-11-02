@@ -52,9 +52,13 @@ cd lgx2KernelLevel
 ```
 
 What `./install.sh` does:
-1. Registers and compiles `avermedia-gc550` (`0.1.0`) via **DKMS** (automatically detects whether your kernel was built with **GCC** or **Clang/LLVM**, and automatically rebuilds the module whenever your kernel updates).
+1. Registers and compiles `avermedia-gc550` (`0.1.0`) via **DKMS** (automatically detects whether your kernel was built with **GCC** or **Clang/LLVM**).
 2. Installs the udev rule ([`99-avermedia-gc550.rules`](99-avermedia-gc550.rules)) creating `/dev/avermedia-gc550` and granting desktop user access.
 3. Loads `videodev`, `videobuf2`, `snd-pcm`, and `gc550.ko` immediately.
+
+### Persistence Across Reboots & Kernel Updates (Rolling-Release Friendly)
+- **Zero-Touch Kernel Updates (DKMS)**: As long as `dkms` and your kernel headers package (e.g. `linux-cachyos-headers` or `linux-headers`) are installed, your package manager (`pacman` / `apt` / `dnf`) automatically runs a DKMS hook (`70-dkms-install.hook` on Arch/CachyOS) whenever a new kernel is installed. It recompiles and installs `gc550.ko` for the new kernel automatically in the background (~2 seconds)—you never have to manually recompile after a system update.
+- **Automatic Plug-and-Play Loading**: The module embeds the USB device alias (`usb:v07CAp4710...` and `usb:v07CAp0550...`). Across reboots, the Linux kernel and `udev` automatically load `gc550.ko` on demand the moment the GC550 is plugged into a USB port.
 
 ### Other Installer Commands
 ```bash
