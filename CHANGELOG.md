@@ -1,0 +1,32 @@
+# Changelog
+
+All notable changes to the **AVerMedia Live Gamer Extreme (GC550) Linux Kernel Module (`gc550.ko`)** are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+---
+
+## [0.1.0] - 2026-11-02
+
+### Added
+- **USB 3.0 Core Driver (`kernel/gc550-core.c`)**:
+  - Added USB device table matching AVerMedia Live Gamer Extreme GC550 hardware IDs **`07ca:4710`** and **`07ca:0550`**.
+  - Added USB SuperSpeed (5 Gbps) link check on probe.
+- **Native V4L2 Video Capture (`kernel/gc550-video.c`)**:
+  - Added `videobuf2-vmalloc` V4L2 capture node (`/dev/videoX` and `/dev/avermedia-gc550` symlink) supporting uncompressed `1920x1080 @ 60fps` (`V4L2_PIX_FMT_YUYV`, Rec. 709 limited range).
+  - Implemented BT.1120 SAV (`00 FF FF C0`) and EAV (`00 FF FF C1`) checksum-validated stream parser on USB Bulk Endpoint `0x83 IN` with `8 × 512 KiB` URB ring buffers.
+  - Added cross-URB marker prefix straddle reassembly (`marker_stage` 0..3).
+  - Added automatic 16 KiB FX3 ping-pong DMA swap detector and reorderer (`swap_mode`).
+- **Native ALSA Audio Capture (`kernel/gc550-audio.c`)**:
+  - Added ALSA PCM capture card (`GC550Audio`, `48 kHz`, `16-bit Little-Endian Stereo`) demultiplexing `00 FF FF 58` audio packets from `EP 0x83 IN`.
+- **FX3 USB-to-I2C Command Bridge & Safe Hardware Bootstrap (`kernel/gc550-cmd.c`, `kernel/gc550-regtables.h`)**:
+  - Added 6,576-step hardware initialization table (derived from [@ChrisAJS's `lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace)) programming the `ADV7604` HDMI receiver + 1080p60 EDID RAM, `ADV7511` HDMI passthrough transmitter, `TLV320AIC3x` audio codec, `PCA9539A` GPIO expander, and `Lattice ECP3` FPGA.
+  - Enforced hard runtime filter (`-EPERM`) blocking `AT88SC CryptoMemory` opcodes (`0x05..0x07`, `0x09`) to prevent hardware lockouts.
+  - Added warm board-state detection (`ADV7604 IO[0xFA]` and `PCA9539A CFG`) so already-bootstrapped cards skip cold re-initialization.
+  - Added automatic input color-space configuration (`ADV7604 IO[0x02]`) and neutral picture adjustment reset (`CP 0x3A..0x3D`).
+  - Added HDMI cable, TMDS lock, resolution, and HDCP status logging (`gc550_log_signal_status`) on stream start.
+- **Packaging, Build System & Documentation**:
+  - Added `Makefile` and `dkms.conf` with automatic GCC vs. Clang/LLVM (`LLVM=1`) kernel detection.
+  - Added Arch Linux / CachyOS `PKGBUILD` (`avermedia-gc550-dkms`).
+  - Added distro-aware `install.sh` (`--arch`, `--dkms`, `--direct`, `--uninstall`) and `99-avermedia-gc550.rules`.
+  - Added `TROUBLESHOOTING.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`.

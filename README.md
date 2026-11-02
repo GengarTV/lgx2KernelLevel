@@ -14,6 +14,26 @@ A: I spent tokens on this, and logically there should be performance benefits of
 
 ---
 
+## Hardware Compatibility Matrix
+
+| Device Model | USB ID (`VID:PID`) | Driver Status | Notes |
+|---|---|---|---|
+| **AVerMedia Live Gamer Extreme (GC550 / LGX)** | `07ca:4710` | **Supported & Hardware-Verified** | Primary GC550 hardware revision (`bcdDevice 2.07`). Verified at 1080p60 V4L2 + ALSA on Linux `7.3.1`. |
+| **AVerMedia Live Gamer Extreme (GC550 / LGX)** | `07ca:0550` | **Supported (Alias Included)** | Alternate USB Product ID documented for GC550 hardware. Uses identical USB endpoints and I2C map. |
+| **AVerMedia Live Gamer Extreme 2 (GC551 / LGX2)** | `07ca:0551` | **Not Supported in `gc550.ko`** | Uses an ITE IT6664 HDMI 2.0 4K front-end splitter (`0x2C`/`0x58`). Use upstream [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) for GC551. |
+| **AVerMedia Live Gamer Ultra (GC553)** | `07ca:0553` | **N/A (Standard UVC)** | Works out-of-the-box with the mainline Linux `uvcvideo` driver. |
+
+### HDMI Input Source Compatibility
+
+| Source Signal Type | Status | Details |
+|---|---|---|
+| **1920×1080p @ 60 Hz / 59.94 Hz / 50 Hz (SDR)** | **Supported** | Uncompressed `YUYV` 4:2:2 (Rec. 709 limited range) + 48 kHz 16-bit stereo LPCM audio. |
+| **RGB & YCbCr 4:4:4 / 4:2:2 Sources (SDR)** | **Supported** | `ADV7604 IO[0x02]` is automatically set to `0xF` (auto color-space selection from HDMI AVI InfoFrame). |
+| **HDR10 / HLG / Dolby Vision (BT.2020)** | **Unsupported (Hardware Limit)** | The GC550 uses an HDMI 1.4a 8-bit SDR receiver (`ADV7604`). Turn **HDR OFF** on your source console/PC. |
+| **HDCP-Protected HDMI Sources** | **Unsupported (By Design)** | Encrypted HDCP streams (e.g. PS4/PS5 with HDCP enabled, MacBooks) cannot be captured. Disable HDCP in console settings. |
+
+---
+
 ## Features & Architecture
 
 Instead of requiring a background `libusb` daemon and `v4l2loopback`, `gc550.ko` registers the AVerMedia Live Gamer Extreme (GC550) directly with the Linux kernel media and sound subsystems as soon as you plug it into a USB 3.0 port:
@@ -30,6 +50,16 @@ Instead of requiring a background `libusb` daemon and `v4l2loopback`, `gc550.ko`
 - **Stream Resilience**:
   - **Cross-URB Marker Straddle Reassembly**: Tracks partial `[00 FF FF]` SAV/EAV/Audio markers across USB transfer boundaries so frames never drop or misalign.
   - **16 KiB FX3 DMA Swap Reorderer**: Automatically detects and un-swaps 16 KiB ping-pong DMA buffers if the FX3 flips buffer phase on warm restarts.
+
+---
+
+## Known Issues & Limitations
+
+1. **SDR Only (No HDR):** The internal Analog Devices `ADV7604` (HDMI RX) and `ADV7511` (HDMI TX) are HDMI 1.4a 8-bit chips. They do not support HDMI 2.0a HDR metadata or 10-bit BT.2020 colorimetry.
+2. **USB 3.0 SuperSpeed (5 Gbps) Required:** Uncompressed 1080p60 YUYV video requires ~250 MB/s of USB bandwidth. Connecting the card to a USB 2.0 port or cable (`480M`) will log a warning in `dmesg` and will not stream video.
+3. **Audio Requires Active Video Capture:** Because the GC550 hardware multiplexes HDMI audio packets (`00 FF FF 58`) inside the USB 3.0 video bulk stream (`EP 0x83 IN`), `/dev/videoX` must be actively streaming (e.g. open in OBS) for audio samples to flow into the ALSA capture device.
+4. **Fixed 1920×1080p60 V4L2 Format:** The driver currently exposes a fixed `1920×1080` `YUYV` format (`4,147,200` bytes/frame), matching the preferred EDID mode advertised by the card.
+5. **Cold Bootstrap Delay (~3.3 Seconds):** The very first time `/dev/videoX` is opened after plugging in the USB cable, the driver sends 6,576 I2C setup commands over USB (~3.3 seconds). Subsequent opens skip the bootstrap and start instantaneously.
 
 ---
 
@@ -78,27 +108,64 @@ cd lgx2KernelLevel
 ./install.sh --uninstall  # Unload and remove driver, pacman/DKMS package, and udev rules
 ```
 
-### Verify Installation
-Plug your AVerMedia GC550 into a **USB 3.0 (SuperSpeed)** port and check:
-```bash
-sudo dmesg | grep -i gc550
-v4l2-ctl --list-devices
-arecord -l
-```
-In **OBS Studio**:
-- Add a **Video Capture Device (V4L2)** → select **AVerMedia Live Gamer Extreme (GC550)** (`/dev/video0` or `/dev/avermedia-gc550`).
-- Add an **Audio Input Capture (ALSA / PipeWire)** → select **AVerMedia GC550**.
+---
+
+## Operational Verification Checklist
+
+After running `./install.sh` and plugging the GC550 into a **USB 3.0 (SuperSpeed)** port, run through this checklist to confirm everything is working:
+
+1. **Confirm USB 3.0 SuperSpeed (`5000M`) & Driver Binding:**
+   ```bash
+   lsusb -t | grep -i gc550
+   ```
+   *Expected:* `|__ Port X: Dev Y, If 0, Class=Vendor Specific Class, Driver=gc550, 5000M`
+2. **Confirm V4L2 Video Node & Symlink Exist:**
+   ```bash
+   ls -l /dev/avermedia-gc550 /dev/video*
+   v4l2-ctl --list-devices
+   ```
+   *Expected:* `/dev/avermedia-gc550 -> video0` (or `videoX`) under `AVerMedia Live Gamer Extreme (GC550)`.
+3. **Confirm ALSA Audio Capture Card Exists:**
+   ```bash
+   arecord -l | grep -i gc550
+   ```
+   *Expected:* `card X: GC550Audio [AVerMedia GC550], device 0: GC550 HDMI Audio [AVerMedia GC550 Capture]`
+4. **Test 60 Frames of Video Capture & Check HDMI Signal Lock:**
+   ```bash
+   v4l2-ctl -d /dev/avermedia-gc550 --stream-mmap --stream-count=60
+   sudo dmesg | grep -i gc550 | tail -n 10
+   ```
+   *Expected `dmesg` output:*
+   ```text
+   gc550 2-4:1.0: AVerMedia Live Gamer Extreme (GC550) [07ca:4710] detected (USB speed: super-speed)
+   gc550 2-4:1.0: Registered gc550 as /dev/video0 and ALSA capture card
+   gc550 2-4:1.0: HDMI Status: cable=YES, signal=LOCKED (1920x1080p, HDMI, HDCP=NO, TMDS=148MHz)
+   gc550 2-4:1.0: Stream stopped: frames=60, desyncs=0, swap_mode=0
+   ```
+5. **Configure in OBS Studio:**
+   - Add a **Video Capture Device (V4L2)** → select **AVerMedia Live Gamer Extreme (GC550)**.
+   - Add an **Audio Input Capture (ALSA / PipeWire)** → select **AVerMedia GC550**.
+
+If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for solutions.
 
 ---
 
-## Repository Structure
+## Documentation Index & Repository Structure
+
+- **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** — Solutions for missing kernel headers, Clang/GCC errors, Secure Boot, USB 2.0 fallback, HDCP black screens, and OBS audio.
+- **[`PROTOCOL.md`](PROTOCOL.md)** — Deep-dive USB 3.0 bulk protocol, BT.1120 SAV/EAV markers, and I2C register documentation (by `@ChrisAJS`).
+- **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — Driver architecture, hardware safety rules (`AT88SC`), VM testing workflow, and register table format.
+- **[`CHANGELOG.md`](CHANGELOG.md)** — Release history and notable changes.
 
 ```text
 ├── 99-avermedia-gc550.rules # udev permissions & /dev/avermedia-gc550 symlink
+├── CHANGELOG.md             # Version history and release notes
+├── CONTRIBUTING.md          # Developer & maintainer guide
 ├── Kbuild                   # Kernel build object definitions
 ├── Makefile                 # Out-of-tree kernel module Makefile (GCC & Clang/LLVM auto-detect)
 ├── PKGBUILD                 # Arch Linux / CachyOS pacman package build script (avermedia-gc550-dkms)
 ├── PROTOCOL.md              # USB 3.0 protocol & hardware specification (by @ChrisAJS)
+├── TROUBLESHOOTING.md       # Common build, USB, video, and audio troubleshooting guide
 ├── dkms.conf                # DKMS configuration
 ├── install.sh               # Smart distro-aware installer & uninstaller script
 └── kernel/
