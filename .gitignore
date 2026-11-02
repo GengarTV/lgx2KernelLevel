@@ -1,5 +1,17 @@
-.idea
-cmake-build-debug*
+cmake-build-*
 build/
-src/version.h
-/src/liblgx/src/config.h
+
+# Kernel module build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.symvers
+*.order
+*.cmd
+.*.cmd
+.tmp_versions/
+.cache.mk
+Module.symvers
+modules.order

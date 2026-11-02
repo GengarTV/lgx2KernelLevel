@@ -1,0 +1,6 @@
+# udev rules for AVerMedia Live Gamer Extreme (GC550)
+# Grants logged-in desktop users (uaccess) and video/audio groups access to the device
+SUBSYSTEM=="usb", ATTRS{idVendor}=="07ca", ATTRS{idProduct}=="4710", TAG+="uaccess", MODE="0660", GROUP="video"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="07ca", ATTRS{idProduct}=="0550", TAG+="uaccess", MODE="0660", GROUP="video"
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="07ca", ATTRS{idProduct}=="4710", TAG+="uaccess", SYMLINK+="avermedia-gc550"
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="07ca", ATTRS{idProduct}=="0550", TAG+="uaccess", SYMLINK+="avermedia-gc550"

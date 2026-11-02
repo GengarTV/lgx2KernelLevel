@@ -1,4 +1,30 @@
-# LGX2 Userspace driver (with LGX support)
+# LGX / LGX2 Linux Kernel Module (`gc550.ko`) & Userspace Driver
+
+> **Fork Notice & Credits:** This repository is a fork of [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) by **Chris Sawczuk ([@ChrisAJS](https://github.com/ChrisAJS))** and contributors. Building directly upon their USB 3.0 protocol reverse-engineering, `PROTOCOL.md` specification, and hardware bootstrap research, this fork adds a **native Linux kernel module (`V4L2` + `ALSA`)** in [`kernel/`](kernel/) for the **AVerMedia Live Gamer Extreme (GC550, `07ca:4710` / `07ca:0550`)** alongside the original userspace driver in [`src/`](src/).
+
+---
+
+## Native Linux Kernel Module (`gc550.ko` — V4L2 + ALSA)
+
+Instead of requiring a background `libusb` daemon and `v4l2loopback`, the kernel module in [`kernel/`](kernel/) registers the AVerMedia Live Gamer Extreme (GC550) directly with the Linux kernel media and sound subsystems:
+- **Native V4L2 Video Capture (`/dev/videoX` / `/dev/avermedia-gc550`)**: Uncompressed `1920x1080 @ 60fps` (`YUYV` 4:2:2) via `videobuf2-vmalloc`, ready out-of-the-box in OBS Studio, FFmpeg, mpv, and GStreamer.
+- **Native ALSA Audio Capture (`hw:GC550Audio,0`)**: Demultiplexes embedded HDMI LPCM stereo audio (`48 kHz`, `S16_LE`) directly into an ALSA capture card.
+- **Hardware-Safe Initialization**: Uses the CryptoMemory-stripped GC550 initialization sequence (`kernel/gc550-regtables.h`), board-state detection (`ADV7604 IO 0xFA` & `PCA9539A`), automatic input color-space configuration (`ADV7604 IO 0x02`), and 16 KiB FX3 DMA swap recovery documented by `@ChrisAJS`.
+
+### Quick Install (Kernel Module via DKMS)
+```bash
+./install.sh
+```
+Or build/uninstall manually:
+```bash
+make                      # Compile gc550.ko against running kernel (GCC or Clang/LLVM)
+./install.sh --direct     # Install without DKMS
+./install.sh --uninstall  # Unload and remove kernel module, DKMS package, and udev rules
+```
+
+---
+
+# Original `lgx2userspace` Documentation
 **Before continuing! This project aims to provide support for the LGX and LGX2 USB capture cards. The software is not extensively tested and the effects it has on the capture cards is also not fully understood. If you use the LGX and LGX2 on Windows using the official driver, using this userspace driver may prevent such a set up to continue working.**
 
 **Please please please understand that you are risking your LGX or LGX2 by using this software.**
