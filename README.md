@@ -37,8 +37,6 @@ This project contains a userspace driver for the [AverMedia LGX2 (GC551)](https:
 It can be used to display the captured video and audio in a standalone window or
 to forward the captured video and audio to a virtual video capture device.
 
-There is even an incredibly unnecessary Windows build. Instructions on how to use this can be found in [WINDOWS.md](WINDOWS.md). Spoiler, it's not recommended. 
-
 ## LGX (GC550) Issues
 The LGX (GC550) will not be correctly configured by the official Windows driver after using this userspace driver on Linux (or the Windows build).
 
@@ -308,7 +306,13 @@ and known video source compatibility issues (MacBook colorspace, camera HDMI).
 # Attributions
 This project uses the hard work of the following projects:
 
+ * [ChrisAJS/lgx2userspace](https://github.com/ChrisAJS/lgx2userspace)
  * [libusb](https://libusb.info/)
  * [V4L2Loopback](https://github.com/umlaeute/v4l2loopback)
  * [SDL3](https://www.libsdl.org/)
  * [Catch2](https://github.com/catchorg/Catch2)
+
+---
+
+## Note for Windows Users
+All Windows-specific build files and instructions have been removed from this Linux-focused fork. If you are looking for the Windows userspace build or instructions, please visit **Chris Sawczuk's (@ChrisAJS) upstream repository** at [**https://github.com/ChrisAJS/lgx2userspace**](https://github.com/ChrisAJS/lgx2userspace).

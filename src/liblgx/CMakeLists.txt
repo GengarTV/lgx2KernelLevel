@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.18)
 #   liblgx-core   protocol parsing, pipeline, interfaces, pure helpers - no external dependencies
 #   liblgx-usb    libusb device access and bootstrap (links libusb)
 #   liblgx-sdl    SDL window and audio outputs (links SDL3)
-#   liblgx-linux / -macos / -windows   platform outputs and error sinks
+#   liblgx-linux / -macos              platform outputs and error sinks
 #   liblgx        umbrella target linking all of the above, for the CLI
 
 set(LIBLGX_CORE_SOURCES
@@ -73,12 +73,6 @@ if (CMAKE_SYSTEM MATCHES Darwin)
     message("Detected Mac OS system")
     add_subdirectory(liblgx-macos)
     target_link_libraries(liblgx INTERFACE liblgx-macos)
-endif()
-
-IF (CMAKE_SYSTEM MATCHES Windows)
-    message("Detected Windows system")
-    add_subdirectory(liblgx-windows)
-    target_link_libraries(liblgx INTERFACE liblgx-windows)
 endif()
 
 # Tests link only liblgx-core, which keeps it free of SDL and libusb.

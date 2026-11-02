@@ -39,7 +39,6 @@ bool app::OptionParser::process(int argc, char **argv) {
     {
         switch(getopt(argc, argv, "vVd:hxsgfS:Di:"))
         {
-#ifndef __MINGW32__
 #ifndef __APPLE__
             case 'd':
                 std::cout << "Attempting to output to V4L2Loopback device: " << optarg << std::endl;
@@ -49,7 +48,6 @@ bool app::OptionParser::process(int argc, char **argv) {
             case 'i':
                 _inputDevice = optarg;
                 continue;
-#endif
 #endif
             case 'D':
                 _direct = true;
@@ -100,10 +98,8 @@ bool app::OptionParser::process(int argc, char **argv) {
                     "\t-h\tPrint this usage message\n"
                     "\t-v\tPrint diagnostics information summary at end of execution, useful when submitting bugs\n"
                     "\t-V\tPrint diagnostic information during execution\n"
-#ifndef __MINGW32__
 #ifndef __APPLE__
                     "\t-d V4L2LoopbackDevice\tWhen capturing directly, output video to this V4L2Loopback device (e.g. /dev/video99)\n"
-#endif
 #endif
 #ifdef GC550_SUPPORT
                     "\t-x Use LGX (GC550) device specifically\n"
