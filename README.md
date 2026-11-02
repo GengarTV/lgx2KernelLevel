@@ -4,9 +4,12 @@
 
 PLEASE also note that this kernel module is under HEAVY development (so heavy, in fact, I have not tried it outside of a VM yet, but I CAN confirm it works in QEMU running a CachyOS VM) and, like MANY projects on GitHub, comes with NO WARRANTY and NO SUPPORT!
 
-Q: Why make a kernel module if a userspace driver exists? 
+Q: Why make a kernel module if a userspace driver exists?
+
 A; Well, good question. The long answer is that I had Google Antigravity make me a kernel module; it based its work on Chris Sawczuk's work without my prior knowledge, resulting in two potentially equal things. Of course, I had Antigravity properly credit everyone involved in the project, but on further reflection, that wasn't enough, so I forked his repo and moved my kernel module to his fork, properly crediting his work.
+
 Q: If it was a "mistake", why keep it at all?
+
 A: I spent tokens on this, and logically there should be performance benefits of having the module in the kernel instead of userspace. Poor kernel modules CAN start race conditions, leading to an unstable kernel, more or less breaking your system, so as I said above **PROCEED AT YOUR OWN RISK**
 
 ---
