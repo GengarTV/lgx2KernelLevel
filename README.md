@@ -44,26 +44,30 @@ Make sure you have `git`, `make`, `dkms`, and your distribution's kernel headers
   sudo dnf install kernel-devel kernel-headers make gcc git dkms
   ```
 
-### 2. Clone & Run the Installer
+### 2. Clone & Run the Smart Installer
 ```bash
 git clone https://github.com/GengarTV/lgx2KernelLevel.git
 cd lgx2KernelLevel
 ./install.sh
 ```
 
-What `./install.sh` does:
-1. Registers and compiles `avermedia-gc550` (`0.1.0`) via **DKMS** (automatically detects whether your kernel was built with **GCC** or **Clang/LLVM**).
-2. Installs the udev rule ([`99-avermedia-gc550.rules`](99-avermedia-gc550.rules)) creating `/dev/avermedia-gc550` and granting desktop user access.
-3. Loads `videodev`, `videobuf2`, `snd-pcm`, and `gc550.ko` immediately.
+`./install.sh` automatically detects your Linux distribution and selects the best installation method:
+1. **On Arch Linux / CachyOS / EndeavourOS / Manjaro (Default: `PKGBUILD` + `pacman` + `DKMS`)**:
+   - Runs `makepkg -si` using the included [`PKGBUILD`](PKGBUILD) to build and install the native **`avermedia-gc550-dkms`** package.
+   - `pacman` automatically installs `dkms` if missing, tracks ownership of all files (`/usr/src/avermedia-gc550-0.1.0` and `/usr/lib/udev/rules.d/99-avermedia-gc550.rules`), compiles `gc550.ko` via its DKMS hook, and loads the module immediately.
+2. **On Other Linux Distributions (Ubuntu, Debian, Fedora, etc. — Default: Direct Kernel Build)**:
+   - Compiles `gc550.ko` against `/lib/modules/$(uname -r)/build` (`make modules && make install`), installs the udev rules, and loads the module immediately.
 
 ### Persistence Across Reboots & Kernel Updates (Rolling-Release Friendly)
-- **Zero-Touch Kernel Updates (DKMS)**: As long as `dkms` and your kernel headers package (e.g. `linux-cachyos-headers` or `linux-headers`) are installed, your package manager (`pacman` / `apt` / `dnf`) automatically runs a DKMS hook (`70-dkms-install.hook` on Arch/CachyOS) whenever a new kernel is installed. It recompiles and installs `gc550.ko` for the new kernel automatically in the background (~2 seconds)—you never have to manually recompile after a system update.
+- **Zero-Touch Kernel Updates (DKMS)**: On Arch/CachyOS (or when installed with `--dkms`), `pacman` owns the `avermedia-gc550-dkms` package and automatically runs its DKMS hook (`70-dkms-install.hook`) whenever a new kernel is installed. It recompiles and installs `gc550.ko` for the new kernel automatically in the background (~2 seconds)—you never have to manually recompile after a system update.
 - **Automatic Plug-and-Play Loading**: The module embeds the USB device alias (`usb:v07CAp4710...` and `usb:v07CAp0550...`). Across reboots, the Linux kernel and `udev` automatically load `gc550.ko` on demand the moment the GC550 is plugged into a USB port.
 
 ### Other Installer Commands
 ```bash
-./install.sh --direct     # Compile & install for the current kernel only (without DKMS)
-./install.sh --uninstall  # Unload and remove driver, DKMS package, and udev rules
+./install.sh --arch       # Force Arch/CachyOS PKGBUILD (makepkg -si) installation
+./install.sh --dkms       # Force standalone DKMS installation (for non-Arch distros)
+./install.sh --direct     # Force direct compile & install for current kernel only
+./install.sh --uninstall  # Unload and remove driver, pacman/DKMS package, and udev rules
 ```
 
 ### Verify Installation
@@ -85,9 +89,10 @@ In **OBS Studio**:
 ├── 99-avermedia-gc550.rules # udev permissions & /dev/avermedia-gc550 symlink
 ├── Kbuild                   # Kernel build object definitions
 ├── Makefile                 # Out-of-tree kernel module Makefile (GCC & Clang/LLVM auto-detect)
+├── PKGBUILD                 # Arch Linux / CachyOS pacman package build script (avermedia-gc550-dkms)
 ├── PROTOCOL.md              # USB 3.0 protocol & hardware specification (by @ChrisAJS)
 ├── dkms.conf                # DKMS configuration
-├── install.sh               # Automated DKMS / direct installer & uninstaller script
+├── install.sh               # Smart distro-aware installer & uninstaller script
 └── kernel/
     ├── gc550.h              # Driver structures, constants, and register definitions
     ├── gc550-core.c         # USB probe/disconnect & lifecycle management

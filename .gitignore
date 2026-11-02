@@ -15,3 +15,8 @@ build/
 .cache.mk
 Module.symvers
 modules.order
+
+# Arch makepkg build artifacts
+pkg/
+src/
+*.pkg.tar*
