@@ -2,6 +2,8 @@
 
 > **Fork Notice & Credits:** This repository is a Linux kernel-level fork of [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) by **Chris Sawczuk ([@ChrisAJS](https://github.com/ChrisAJS))** and contributors. Building directly upon their USB 3.0 protocol reverse-engineering, [`PROTOCOL.md`](PROTOCOL.md) specification, and hardware bootstrap research, this project implements a **native Linux kernel driver (`V4L2` + `ALSA`)** for the **AVerMedia Live Gamer Extreme (GC550, `USB ID 07ca:4710` / `07ca:0550`)**.
 
+PLEASE also note that this kernel module is under HEAVY development (so heavy, in fact, I have not tried it outside of a VM yet, but I CAN confirm it works in QEMU running a CachyOS VM) and, like MANY projects on GitHub, comes with NO WARRANTY and NO SUPPORT! 
+
 ---
 
 ## Features & Architecture
