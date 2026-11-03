@@ -82,3 +82,23 @@ Upstream [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) l
   - Poll `ADV7604` status registers every ~200–500 ms when idle/streaming to detect HDMI hot-plug, resolution changes, or HDCP state changes dynamically.
 - [ ] **Synthesized "No Signal" / "HDCP Protected" Frame Generator**:
   - When `ADV7604` reports no HDMI cable or HDCP encryption, emit a solid Rec. 709 black/status frame at 60 Hz into `vb2` buffers so V4L2 consumers (like OBS) don't stall waiting for `DQBUF`.
+
+---
+
+## Long-Term Goal: Distribution & Mainline Linux Kernel (`linux-media`) Upstreaming
+
+### Phase 1: Arch User Repository (AUR) Release
+- [ ] **Publish `avermedia-gc550-dkms` to the AUR**:
+  - Adapt the existing [`PKGBUILD`](PKGBUILD) to fetch tagged releases (or `-git` HEAD) from `https://github.com/GengarTV/lgx2KernelLevel` so Arch Linux, CachyOS, EndeavourOS, and Manjaro users can install the driver directly via `paru -S avermedia-gc550-dkms` or `yay -S avermedia-gc550-dkms`.
+
+### Phase 2: Mainline Linux Kernel Submission (`drivers/media/usb/gc550/`)
+Target subsystem: **Linux Media Subsystem (`linux-media@vger.kernel.org`)**, maintained by Hans Verkuil (V4L2) and Mauro Carvalho Chehab.
+
+- [ ] **1. License Coordination (`GPL-3.0` → `GPL-2.0-or-later`)**:
+  - The mainline Linux kernel requires `GPL-2.0` compatibility. Coordinate with upstream author **Chris Sawczuk ([@ChrisAJS](https://github.com/ChrisAJS))** to dual-license/re-license the reverse-engineered GC550 hardware initialization tables under `GPL-2.0-or-later` and invite him to co-sign (`Signed-off-by` / `Co-developed-by`) the upstream patch series.
+- [ ] **2. Pass `v4l2-compliance -s` with Zero Failures**:
+  - Run `v4l2-compliance -s -d /dev/avermedia-gc550` (from `v4l-utils`) after implementing the `struct kref` / `v4l2_dev.release` disconnect fix and resolve any flagged V4L2 ioctl edge cases.
+- [ ] **3. Trim Redundant Polling Loops from `gc550-regtables.h`**:
+  - As documented in [`PROTOCOL.md`](PROTOCOL.md), only the first ~1,730 steps of the 6,576-command capture are actual chip initialization; the remaining ~4,800 steps are repeated status-poll reads from the Windows USB capture. Trimming the redundant polling reads will reduce [`kernel/gc550-regtables.h`](kernel/gc550-regtables.h) by ~75% and cut cold bootstrap time from `~3.3 s` to **`< 0.9 s`**.
+- [ ] **4. Pass `scripts/checkpatch.pl --strict`**:
+  - Verify zero style warnings against the target `media_stage` kernel tree before submitting the `[PATCH 0/2] media: usb: gc550: Add AVerMedia Live Gamer Extreme (GC550) driver` series to `linux-media@vger.kernel.org`.
