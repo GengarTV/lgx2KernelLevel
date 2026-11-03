@@ -60,6 +60,7 @@ Instead of requiring a background `libusb` daemon and `v4l2loopback`, `gc550.ko`
 3. **Audio Requires Active Video Capture:** Because the GC550 hardware multiplexes HDMI audio packets (`00 FF FF 58`) inside the USB 3.0 video bulk stream (`EP 0x83 IN`), `/dev/videoX` must be actively streaming (e.g. open in OBS) for audio samples to flow into the ALSA capture device.
 4. **Fixed 1920×1080p60 V4L2 Format:** The driver currently exposes a fixed `1920×1080` `YUYV` format (`4,147,200` bytes/frame), matching the preferred EDID mode advertised by the card.
 5. **Cold Bootstrap Delay (~3.3 Seconds):** The very first time `/dev/videoX` is opened after plugging in the USB cable, the driver sends 6,576 I2C setup commands over USB (~3.3 seconds). Subsequent opens skip the bootstrap and start instantaneously.
+6. **Close Capture Apps Before Unplugging USB (`v0.1.0`):** Hot-unplugging the **HDMI** cable while streaming works cleanly, but hot-unplugging the **USB 3.0** cable while an application (`OBS`, `mpv`) still holds `/dev/videoX` open can trigger a use-after-free in `v4l2_ioctl` (tracked in [`TODO.md`](TODO.md) for reference-counted `v4l2_dev.release` teardown). Always close `OBS` / `mpv` before unplugging the USB cable.
 
 ---
 
