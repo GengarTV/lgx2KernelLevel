@@ -120,3 +120,13 @@ and automatically un-swaps the stream. If the hardware ever gets wedged into an 
    - This means **video capture (`/dev/videoX`) must be active** for the USB stream URBs to run and feed audio samples into the ALSA capture device!
 3. **OBS Setup:**
    Add an **Audio Input Capture (ALSA)** or **Audio Input Capture (PipeWire / PulseAudio)** source in OBS and select **AVerMedia GC550 (`GC550 HDMI Audio`)**.
+
+### No Audio When Previewing with `mpv`
+Because Linux separates V4L2 video (`/dev/avermedia-gc550`) and ALSA audio (`hw:GC550Audio,0`), running `mpv av://v4l2:/dev/avermedia-gc550` only opens the video stream. Furthermore, passing `--audio-file=av://alsa:hw:GC550Audio,0` directly to `mpv` can stall audio playback because V4L2 timestamps use `CLOCK_MONOTONIC` (system uptime) while FFmpeg's `alsa` demuxer uses `CLOCK_REALTIME` (Unix epoch).
+
+**Fix (Low-Latency `mpv` + PipeWire Audio Preview):**
+Run `mpv` for video and bridge the ALSA capture device directly into PipeWire:
+```bash
+mpv av://v4l2:/dev/avermedia-gc550 --profile=low-latency --untimed &
+arecord -D hw:GC550Audio,0 -f S16_LE -c 2 -r 48000 -B 40000 -F 10000 | pw-play --rate=48000 --channels=2 --format=s16 --latency=20ms -
+```
