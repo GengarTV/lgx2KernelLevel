@@ -10,7 +10,7 @@ A; Well, good question. The long answer is that I had Google Antigravity make me
 
 Q: If it was a "mistake", why keep it at all?
 
-A: I spent tokens on this, and logically there should be performance benefits of having the module in the kernel instead of userspace. Badly written kernel modules CAN start race conditions, leading to an unstable kernel, more or less breaking your system, so as I said above **PROCEED AT YOUR OWN RISK**
+A: I spent tokens on this, and logically there should be performance benefits of having the module in the kernel instead of userspace (Spoiler warning: there is). Badly written kernel modules CAN start race conditions, leading to an unstable kernel, more or less breaking your system, so as I said above **PROCEED AT YOUR OWN RISK**
 
 ---
 
