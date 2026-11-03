@@ -124,9 +124,9 @@ and automatically un-swaps the stream. If the hardware ever gets wedged into an 
 ### No Audio When Previewing with `mpv`
 Because Linux separates V4L2 video (`/dev/avermedia-gc550`) and ALSA audio (`hw:GC550Audio,0`), running `mpv av://v4l2:/dev/avermedia-gc550` only opens the video stream. Furthermore, passing `--audio-file=av://alsa:hw:GC550Audio,0` directly to `mpv` can stall audio playback because V4L2 timestamps use `CLOCK_MONOTONIC` (system uptime) while FFmpeg's `alsa` demuxer uses `CLOCK_REALTIME` (Unix epoch).
 
-**Fix (Low-Latency `mpv` + PipeWire Audio Preview):**
-Run `mpv` for video and bridge the ALSA capture device directly into PipeWire:
+**Fix (Ultra-Low-Latency ~50ms `mpv` + PipeWire Audio Preview):**
+Run `mpv` with zero read-ahead probing (or press `Right Arrow` in `mpv` to flush startup frames to the live edge) and bridge the ALSA capture device directly into PipeWire:
 ```bash
-mpv av://v4l2:/dev/avermedia-gc550 --profile=low-latency --untimed &
+mpv av://v4l2:/dev/avermedia-gc550 --profile=low-latency --demuxer-lavf-analyzeduration=0 --demuxer-readahead-secs=0 &
 arecord -D hw:GC550Audio,0 -f S16_LE -c 2 -r 48000 -B 40000 -F 10000 | pw-play --rate=48000 --channels=2 --format=s16 --latency=20ms -
 ```
