@@ -6,7 +6,7 @@ This file tracks planned features, technical design notes, and future experiment
 
 ## Current Milestone: Field Testing `v0.1.0` (1080p60 Baseline)
 - [x] Verify probe, cold bootstrap, V4L2 video (`1080p60 YUYV`), and ALSA audio (`48 kHz S16_LE`) in QEMU/KVM CachyOS VM (`07ca:4710`).
-- [x] Field-test bare-metal performance, frame pacing (`60.02 fps`, `0` desyncs), and audio sync on a secondary physical Linux machine (laptop) (When I can find my god damn extra USB 3.0 A to Micro-B SuperSpeed cable! I REALLY don't want to untangle my cable management from my primary production rig — *Update: Cable found, verified on `niri` laptop!*).
+- [x] Field-test bare-metal performance, frame pacing (`60.02 fps`, `0` desyncs), and audio sync on a secondary physical Linux machine (laptop) (When I can find my god damn extra USB 3.0 A to Micro-B SuperSpeed cable! I REALLY don't want to untangle my cable management from my primary production rig — *Update: Cable found! Verified on `niri` laptop with Raspberry Pi 3B & Nintendo Switch: `776,295` continuous 1080p60 frames with `0` desyncs + `48 kHz` stereo ALSA audio!*).
 - [ ] Field-test on primary production gaming rig.
 
 ---

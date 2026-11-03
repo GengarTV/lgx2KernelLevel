@@ -26,7 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Added automatic input color-space configuration (`ADV7604 IO[0x02]`) and neutral picture adjustment reset (`CP 0x3A..0x3D`).
   - Added HDMI cable, TMDS lock, resolution, and HDCP status logging (`gc550_log_signal_status`) on stream start.
 - **Packaging, Build System & Documentation**:
-  - Added `Makefile` and `dkms.conf` with automatic GCC vs. Clang/LLVM (`LLVM=1`) kernel detection.
+  - Added `Makefile` and `dkms.conf` with automatic GCC vs. Clang/LLVM (`LLVM=1`) kernel detection (supporting simultaneous DKMS builds across Clang mainline and GCC LTS kernels).
   - Added Arch Linux / CachyOS `PKGBUILD` (`avermedia-gc550-dkms`).
   - Added distro-aware `install.sh` (`--arch`, `--dkms`, `--direct`, `--uninstall`) and `99-avermedia-gc550.rules`.
-  - Added `TROUBLESHOOTING.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`.
+  - Added `TROUBLESHOOTING.md`, `CONTRIBUTING.md`, `TODO.md`, and `CHANGELOG.md`.
+- **Hardware & Endurance Verification**:
+  - Verified on bare-metal CachyOS Linux (`7.3.1-1-cachyos` Clang + `6.18.55-2-cachyos-lts` GCC) over USB 3.0 SuperSpeed (`5000M`).
+  - Verified 3.6+ hours continuous `1080p60` streaming (`776,295` frames captured with `0` desyncs), HDMI hot-plugging, and `48 kHz` stereo ALSA audio capture with **Nintendo Switch** and **Raspberry Pi 3B** HDMI sources.

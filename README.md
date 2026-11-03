@@ -18,7 +18,7 @@ A: I spent tokens on this, and logically there should be performance benefits of
 
 | Device Model | USB ID (`VID:PID`) | Driver Status | Notes |
 |---|---|---|---|
-| **AVerMedia Live Gamer Extreme (GC550 / LGX)** | `07ca:4710` | **Supported & Hardware-Verified** | Primary GC550 hardware revision (`bcdDevice 2.07`). Verified at 1080p60 V4L2 + ALSA on Linux `7.3.1`. |
+| **AVerMedia Live Gamer Extreme (GC550 / LGX)** | `07ca:4710` | **Supported & Bare-Metal Verified** | Primary GC550 hardware revision (`bcdDevice 2.07`). Verified on bare-metal CachyOS (`7.3.1-cachyos` Clang & `6.18.55-lts` GCC) for 3.6+ hours continuous `1080p60` (`776,295` frames, `0` desyncs) + `48 kHz` ALSA audio. |
 | **AVerMedia Live Gamer Extreme (GC550 / LGX)** | `07ca:0550` | **Supported (Alias Included)** | Alternate USB Product ID documented for GC550 hardware. Uses identical USB endpoints and I2C map. |
 | **AVerMedia Live Gamer Extreme 2 (GC551 / LGX2)** | `07ca:0551` | **Not Supported in `gc550.ko`** | Uses an ITE IT6664 HDMI 2.0 4K front-end splitter (`0x2C`/`0x58`). Use upstream [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) for GC551. |
 | **AVerMedia Live Gamer Ultra (GC553)** | `07ca:0553` | **N/A (Standard UVC)** | Works out-of-the-box with the mainline Linux `uvcvideo` driver. |
@@ -27,7 +27,7 @@ A: I spent tokens on this, and logically there should be performance benefits of
 
 | Source Signal Type | Status | Details |
 |---|---|---|
-| **1920×1080p @ 60 Hz / 59.94 Hz / 50 Hz (SDR)** | **Supported** | Uncompressed `YUYV` 4:2:2 (Rec. 709 limited range) + 48 kHz 16-bit stereo LPCM audio. |
+| **1920×1080p @ 60 Hz / 59.94 Hz / 50 Hz (SDR)** | **Supported & Verified** | Uncompressed `YUYV` 4:2:2 (Rec. 709 limited range) + 48 kHz 16-bit stereo LPCM audio. Bare-metal verified with **Nintendo Switch** (video + audio) and **Raspberry Pi 3B**. |
 | **RGB & YCbCr 4:4:4 / 4:2:2 Sources (SDR)** | **Supported** | `ADV7604 IO[0x02]` is automatically set to `0xF` (auto color-space selection from HDMI AVI InfoFrame). |
 | **HDR10 / HLG / Dolby Vision (BT.2020)** | **Unsupported (Hardware Limit)** | The GC550 uses an HDMI 1.4a 8-bit SDR receiver (`ADV7604`). Turn **HDR OFF** on your source console/PC. |
 | **HDCP-Protected HDMI Sources** | **Unsupported (By Design)** | Encrypted HDCP streams (e.g. PS4/PS5 with HDCP enabled, MacBooks) cannot be captured. Disable HDCP in console settings. |
