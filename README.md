@@ -53,6 +53,33 @@ Instead of requiring a background `libusb` daemon and `v4l2loopback`, `gc550.ko`
 
 ---
 
+## Performance, Latency & Architectural Payoff
+
+While upstream [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) provides a great cross-platform SDL3/`libusb` application, moving the GC550 stream parser into a Linux kernel driver (`gc550.ko`) provides measurable latency, memory-bandwidth, and integration benefits when capturing into V4L2/PipeWire applications like **OBS Studio**:
+
+### 1. Measured Glass-to-Glass Latency: `50 ms` (3 Frames @ 60 Hz)
+Tested on bare-metal CachyOS (`7.3.1-1-cachyos`, Wayland) using a millisecond count-up timer comparing the GC550's `HDMI OUT` passthrough on a TV (`50.283 s`) against a live `mpv` V4L2 preview window (`50.233 s`):
+- **Total Glass-to-Glass Delta:** **`50 ms`** (`3 × 16.67 ms` frames at 60 fps):
+  1. **Frame 1 (`~16.7 ms` — Hardware Scanout + USB 3.0 DMA):** The GC550 scans out 1080 lines of HDMI video (`4.14 MB`) over USB 3.0 Bulk `EP 0x83 IN` until the `EAV` marker triggers `vb2_buffer_done()` in `gc550.ko`.
+  2. **Frame 2 (`~16.7 ms` — GPU Shader & Wayland Compositor):** `mpv` uploads the `YUYV` frame, converts `YUYV → RGB` on the GPU, and submits the surface to KWin/Wayland.
+  3. **Frame 3 (`~16.7 ms` — Laptop Display VSync & Panel Scanout):** KWin flips on the next 60 Hz VSync and the laptop LCD scans out the frame.
+- **Raw Driver Capture Latency:** **`~16–20 ms` (1 frame)**, matching AVerMedia's official Windows Ultra-Low-Latency specification.
+- **Endurance Verification:** Tested over **3.6+ hours continuous `1080p60` streaming** (`776,295` frames captured with **`0` frame desyncs** and **`0` ALSA audio XRUNs**).
+
+### 2. Kernel (`gc550.ko`) vs. Userspace (`libusb` + `v4l2loopback`) Pipeline Comparison
+
+| Metric / Capability | Userspace Daemon (`libusb` → `v4l2loopback`) | Native Kernel Module (`gc550.ko`) |
+|---|---|---|
+| **USB Transfer Granularity** | `2,080,768 B` (`~2 MiB` = half a 1080p frame per transfer) | **`512 KiB`** (`1/8th` of a frame per URB) |
+| **`EAV` Frame-Completion Delay** | Up to `~8.3 ms` (waits for `2 MiB` buffer to fill into next frame) | **`~1.5–2.5 ms`** (completes immediately on `512 KiB` URB boundary) |
+| **Memory Copies (for OBS / V4L2)** | **3–4 copies per frame** (`libusb` → `BufferReorderer` → `FrameBuilder` → `v4l2loopback` → OBS; ~1 GB/s RAM traffic) | **1 copy** (Kernel URB buffer → `vb2` `mmap` buffer shared directly with OBS; ~250 MB/s) |
+| **Context Switches per Frame** | Multiple Kernel ↔ Userspace hops (`xhci` → daemon → `v4l2loopback` → OBS) | **Zero** intermediate userspace daemon hops |
+| **Audio Integration** | Internal SDL3 audio queue (requires virtual sinks to route into OBS) | **Native ALSA Capture Card (`hw:GC550Audio,0`)** visible in PipeWire & OBS |
+| **Plug-and-Play UX** | Manual CLI launch; claims raw USB interface via `libusb` | **100% Plug-and-Play** (`udev` auto-loads on USB plug-in) |
+| **Fault Isolation** | **Userspace isolated** (process crash only closes the app) | **Kernel ring-0** (driver bugs can cause a kernel `Oops`) |
+
+---
+
 ## Known Issues & Limitations
 
 1. **SDR Only (No HDR):** The internal Analog Devices `ADV7604` (HDMI RX) and `ADV7511` (HDMI TX) are HDMI 1.4a 8-bit chips. They do not support HDMI 2.0a HDR metadata or 10-bit BT.2020 colorimetry.

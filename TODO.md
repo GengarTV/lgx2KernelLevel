@@ -76,6 +76,8 @@ Upstream [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) l
 ---
 
 ## Other Future Enhancements
+- [ ] **URB Chunk Size Latency Tuning (`GC550_URB_BUF_SIZE`: `512 KiB` → `128 KiB`)**:
+  - A 1080p frame period (`4,161,536` bytes = `254 × 16 KiB`) is not an exact multiple of `512 KiB` (`32 × 16 KiB`), so the `512 KiB` URB containing a frame's `EAV` marker can wait up to `~1.5–2.5 ms` into the next frame before completing. Reducing `GC550_URB_BUF_SIZE` to `128 KiB` (with `16` or `32` URBs) can shave `~2 ms` off `vb2_buffer_done()` delivery to catch the current 60 Hz display VSync (`~33 ms` / 2-frame glass-to-glass latency).
 - [ ] **Periodic Background Status Polling (`struct delayed_work`)**:
   - Poll `ADV7604` status registers every ~200–500 ms when idle/streaming to detect HDMI hot-plug, resolution changes, or HDCP state changes dynamically.
 - [ ] **Synthesized "No Signal" / "HDCP Protected" Frame Generator**:
