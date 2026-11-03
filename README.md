@@ -2,7 +2,7 @@
 
 > **Fork Notice & Credits:** This repository is a Linux kernel-level fork of [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) by **Chris Sawczuk ([@ChrisAJS](https://github.com/ChrisAJS))** and contributors. Building directly upon their USB 3.0 protocol reverse-engineering, [`PROTOCOL.md`](PROTOCOL.md) specification, and hardware bootstrap research, this project implements a **native Linux kernel driver (`V4L2` + `ALSA`)** for the **AVerMedia Live Gamer Extreme (GC550, `USB ID 07ca:4710` / `07ca:0550`)**.
 
-PLEASE also note that this kernel module is under HEAVY development (so heavy, in fact, I have not tried it outside of a VM yet, but I CAN confirm it works in QEMU running a CachyOS VM) and, like MANY projects on GitHub, comes with NO WARRANTY and NO SUPPORT!
+PLEASE also note that this kernel module is under HEAVY development (I CAN confirm it works in QEMU running a CachyOS VM and on bare metal running the same versions, more on that in the TODO.md file) and, like MANY projects on GitHub, comes with NO WARRANTY and NO SUPPORT!
 
 Q: Why make a kernel module if a userspace driver exists?
 
@@ -11,6 +11,10 @@ A; Well, good question. The long answer is that I had Google Antigravity make me
 Q: If it was a "mistake", why keep it at all?
 
 A: I spent tokens on this, and logically there should be performance benefits of having the module in the kernel instead of userspace (Spoiler warning: there is). Badly written kernel modules CAN start race conditions, leading to an unstable kernel, more or less breaking your system, so as I said above **PROCEED AT YOUR OWN RISK**
+
+Q: Wait—if this driver is for the original LGX (GC550), why is the repo named `lgx2KernelLevel`?
+
+A: Think of the `2` as **"to"** — **`LGX-to-KernelLevel`** (playing off upstream's `lgx2userspace`), not `LGX2-KernelLevel`! (For the LGX2 / GC551, use `@ChrisAJS`'s upstream [`lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace)).
 
 ---
 
