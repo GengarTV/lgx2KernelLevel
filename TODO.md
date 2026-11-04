@@ -14,6 +14,11 @@ This file tracks planned features, technical design notes, and future experiment
   - **Unplug test:** OBS was capturing video and audio. Disconnect completed after `29,629` frames with `0` desyncs and no kernel faults; replug registered the device and completed a cold bootstrap.
 - [ ] Field-test on primary production gaming rig.
 
+## Stability Hardening Follow-up
+- [ ] Collect a real-GC550 SAV→EAV span histogram across sustained 1080p60 capture and reconnects. The parser retains the protocol-derived ±16 KiB acceptance window; do not tighten it until actual device spans are measured. Check whether accepted short spans leave stale bytes at the end of a V4L2 frame.
+- [ ] In a disposable VM or USB test setup, exercise command replies with exact, short, oversized, and absent payloads and verify each fails or succeeds with the expected error. Do not use the daily-use laptop for fault injection.
+- [ ] Recheck parser callback serialization on each newly supported HCD/kernel combination. Niri's CachyOS 7.3.1-1 xHCI trace is documented in [`CONTRIBUTING.md`](CONTRIBUTING.md), but generic USB completion ordering is not guaranteed across all HCDs.
+
 ---
 
 ## Planned Feature: Dynamic ALSA Audio Sample Rate (`44.1 kHz` / `48 kHz` / `32 kHz`)

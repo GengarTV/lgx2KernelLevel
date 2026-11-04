@@ -31,6 +31,18 @@ The module (`gc550.ko`) is split into four C compilation units and two headers i
 
 For deep-dive protocol details (BT.1120 SAV/EAV markers, checksums, and I2C register maps), read [`PROTOCOL.md`](PROTOCOL.md).
 
+### Stream callback ordering on the tested Niri kernel
+
+On Niri's CachyOS `7.3.1-1` kernel, the xHCI host controller advertises
+`HCD_BH`; the USB core gives back these bulk URBs through its single
+low-priority work item and drains that giveback queue serially. A short
+trace during capture observed 1,399 stream completion callbacks, all on CPU
+1. This supports the current parser's single-callback assumption for that
+kernel/controller combination. It is not a guarantee made by the generic USB
+API for every HCD. Recheck the completion path before changing HCDs or
+supporting a controller that can invoke stream completions concurrently; do
+not infer system-wide safety from this one machine's trace.
+
 ---
 
 ## 3. Safe Kernel Development & VM Testing Workflow

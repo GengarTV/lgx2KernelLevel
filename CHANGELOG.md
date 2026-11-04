@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- Reject USB command replies whose actual length differs from the expected length before copying data to callers; reject invalid I2C data pointers.
+- Saturate the video frame-span counter so a missing EAV cannot wrap malformed-stream accounting into an accepted frame size. The existing ±16 KiB span tolerance and streaming parameters are unchanged.
+
+### Documented
+- Record Niri's tested xHCI callback-ordering evidence and its HCD-specific limits, plus follow-up measurements and fault-injection checks.
+
 ## [0.1.1] - 2026-11-04
 
 ### Fixed

@@ -37,6 +37,7 @@
 
 #define GC550_PAIR_BUF_SIZE	(2 * GC550_FX3_DMA_BUF_SIZE) /* 32 KiB */
 #define GC550_SWAP_SPAN_LIMIT	(32 * 1024)
+#define GC550_MAX_FRAME_SPAN	(GC550_FRAME_SIZE + 0x4000)
 
 void gc550_parser_reset(struct gc550_stream_parser *parser)
 {
@@ -89,7 +90,10 @@ static void gc550_append_video_bytes(struct gc550_dev *dev,
 	}
 	spin_unlock_irqrestore(&dev->queue_lock, flags);
 
-	p->video_pos += len;
+	/* A missing EAV must not wrap the span counter into a valid frame size. */
+	if (p->video_pos <= GC550_MAX_FRAME_SPAN)
+		p->video_pos = min_t(size_t, (size_t)p->video_pos + len,
+				     GC550_MAX_FRAME_SPAN + 1);
 }
 
 static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
@@ -124,8 +128,8 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 	 * Validate span size is within a 16 KiB FX3 DMA quantum of one
 	 * complete 1080p YUYV frame (4,147,200 bytes).
 	 */
-	if (p->video_pos + 0x4000 < GC550_FRAME_SIZE ||
-	    p->video_pos > GC550_FRAME_SIZE + 0x4000) {
+	if (p->video_pos < GC550_FRAME_SIZE - 0x4000 ||
+	    p->video_pos > GC550_MAX_FRAME_SPAN) {
 		p->video_pos = 0;
 		return;
 	}

@@ -186,6 +186,16 @@ driven by marker class + checksum-validated headers, but on this stream it
 reduces to: **flush the video data at each EAV boundary; emit a frame when the
 just-flushed span is (within a 0x4000 quantum of) exactly one 1080p frame.**
 
+The Linux parser uses the same ±16 KiB frame-span tolerance. Its span counter
+is saturated just above the largest accepted span so a missing EAV cannot
+wrap the counter and make malformed input look like a valid frame. The
+tolerance is retained pending a measured span distribution from the GC550;
+the reference stream alone does not establish the device's full span range.
+Because the parser copies at most one frame but accepts a span shorter than a
+full frame, a short accepted span can leave the end of the output buffer
+containing old data. Measure real-device SAV→EAV spans before narrowing the
+tolerance or changing how such frames are handled.
+
 - Video data between a valid SAV and its matching EAV is flushed to the frame
   buffer (via `ParseAVerData::copyVideoDataToFrameBuffer`, dispatched through a
   4-way vtable selected by header bit fields).
@@ -408,6 +418,14 @@ Addresses are **7-bit I2C**.
 | `02 AA LL NN RR..` + `<NN` | I2C read: `NN` bytes from register `RR` of slave `AA` |
 | `0E 02 07 FE 02 00` + `<512` | Non-I2C bridge command, first in the stream; reads 512 bytes (meaning unknown — device/firmware info?) |
 | `14` | Non-I2C bridge command, single byte, issued once mid-stream (cmd #7732, right after the passthrough chip's TX blocks are reconfigured). Unknown — candidate for "start/arm video path" |
+
+The Linux command bridge reads replies into a 1 KiB buffer, then requires the
+actual Bulk IN length to equal the command's expected reply length before
+copying any bytes to the caller. A short or oversized response is an error;
+this prevents a truncated I2C reply from being treated as successful and
+avoids consuming uninitialized bytes. Keep the 1 KiB receive size: it also
+allows the bridge to drain stale data without weakening per-command length
+validation.
 
 (The GC550 stream in `commanddata_lgx.cpp` also used opcodes `05`/`06`/`07`/`09`
 to talk to an AT88SC CryptoMemory chip, plus `08`; see "GC550 (LGX)

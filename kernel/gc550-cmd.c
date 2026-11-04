@@ -104,6 +104,9 @@ static int gc550_cmd_xfer(struct gc550_dev *dev, const u8 *tx_buf, int tx_len,
 	int actual_len = 0;
 	int ret;
 
+	if (rx_expected <= 0 || rx_expected > GC550_CMD_MAX_PKT_SIZE)
+		return -EINVAL;
+
 	ret = gc550_cmd_send(dev, tx_buf, tx_len);
 	if (ret < 0)
 		return ret;
@@ -121,11 +124,16 @@ static int gc550_cmd_xfer(struct gc550_dev *dev, const u8 *tx_buf, int tx_len,
 		return ret;
 	}
 
-	if (rx_buf && rx_expected > 0) {
-		int copy_len = min(actual_len, rx_expected);
-
-		memcpy(rx_buf, dev->cmd_in_buf, copy_len);
+	if (actual_len != rx_expected) {
+		ret = actual_len < rx_expected ? -EREMOTEIO : -EPROTO;
+		dev_err(&dev->intf->dev,
+			"Bulk IN 0x81 length mismatch: got %d, expected %d (%d)\n",
+			actual_len, rx_expected, ret);
+		return ret;
 	}
+
+	if (rx_buf)
+		memcpy(rx_buf, dev->cmd_in_buf, rx_expected);
 
 	return actual_len;
 }
@@ -140,7 +148,7 @@ int gc550_i2c_write(struct gc550_dev *dev, u8 slave_addr, u8 reg,
 	u8 pkt[4 + 32];
 	int ret;
 
-	if (len > 32)
+	if (len > 32 || (len && !data))
 		return -EINVAL;
 
 	pkt[0] = GC550_OP_I2C_WRITE;
@@ -172,7 +180,7 @@ int gc550_i2c_read(struct gc550_dev *dev, u8 slave_addr, u8 reg,
 	u8 pkt[5];
 	int ret;
 
-	if (len == 0 || len > 64)
+	if (!data || len == 0 || len > 64)
 		return -EINVAL;
 
 	pkt[0] = GC550_OP_I2C_READ;
