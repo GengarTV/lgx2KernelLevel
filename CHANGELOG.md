@@ -6,16 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [0.1.2] - 2026-11-04
 
 ### Fixed
 - Reject USB command replies whose actual length differs from the expected length before copying data to callers; reject invalid I2C data pointers.
 - Saturate the video frame-span counter so a missing EAV cannot wrap malformed-stream accounting into an accepted frame size. The existing ±16 KiB span tolerance and streaming parameters are unchanged.
 - Fill the uncopied tail of an accepted short V4L2 frame with neutral YUYV black before returning its buffer, preventing bytes from a previously used buffer from appearing in the frame.
 
+### Changed
+- Released the stability-hardening branch as DKMS/module version `0.1.2` and pacman package `0.1.2-1`.
+
 ### Documented
 - Record Niri's tested xHCI callback-ordering evidence and its HCD-specific limits, plus follow-up measurements and fault-injection checks.
-- Identify this stability test build as DKMS/module version `0.1.1SH`; the pacman package is `0.1.1-2` so it sorts after the installed `0.1.1-1` package.
+
+### Verified
+- Built `0.1.2` with `W=1` against CachyOS kernel `7.3.1-1-cachyos`. The Niri-tested `0.1.1SH` DKMS package built for both `7.3.1-1-cachyos` and `6.18.55-2-cachyos-lts`.
+- Tested the stability code on Niri with mpv and OBS. During active OBS video/audio capture, USB disconnect stopped after `17,227` frames with `0` desyncs and no kernel faults; reconnect re-enumerated at SuperSpeed, completed cold bootstrap, and restored 1080p capture. OBS video and GC550 audio capture were confirmed active after reconnect.
+- The accepted short-frame tail handling was reviewed, but no live span instrumentation confirmed that a naturally short frame exercised that path.
 
 ## [0.1.1] - 2026-11-04
 

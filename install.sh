@@ -23,7 +23,7 @@ set -euo pipefail
 
 PKG_NAME="avermedia-gc550"
 ARCH_PKG_NAME="avermedia-gc550-dkms"
-PKG_VER="0.1.1SH"
+PKG_VER="0.1.2"
 MOD_NAME="gc550"
 UDEV_RULE="99-avermedia-gc550.rules"
 UDEV_DEST="/etc/udev/rules.d/${UDEV_RULE}"
