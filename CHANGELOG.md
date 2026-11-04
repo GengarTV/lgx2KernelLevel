@@ -22,7 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Verified
 - Built `0.1.2` with `W=1` against CachyOS kernel `7.3.1-1-cachyos`. The Niri-tested `0.1.1SH` DKMS package built for both `7.3.1-1-cachyos` and `6.18.55-2-cachyos-lts`.
 - Tested the stability code on Niri with mpv and OBS. During active OBS video/audio capture, USB disconnect stopped after `17,227` frames with `0` desyncs and no kernel faults; reconnect re-enumerated at SuperSpeed, completed cold bootstrap, and restored 1080p capture. OBS video and GC550 audio capture were confirmed active after reconnect.
-- The accepted short-frame tail handling was reviewed, but no live span instrumentation confirmed that a naturally short frame exercised that path.
+- Measured `55,655` SAV→EAV candidates during sustained capture before and after a physical reconnect on Niri (CachyOS `7.3.1-1`): `55,654` fell in the `4,147,200..4,147,455` byte bin; one post-reconnect candidate was below the `4,130,816` byte acceptance limit and was rejected. Both sessions ended with `0` desyncs. No accepted short span occurred, so the neutral-tail fill was not exercised; the ±16 KiB window remains unchanged.
 
 ## [0.1.1] - 2026-11-04
 

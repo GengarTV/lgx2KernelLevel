@@ -121,6 +121,11 @@ and automatically un-swaps the stream. If the hardware ever gets wedged into an 
 3. **OBS Setup:**
    Add an **Audio Input Capture (ALSA)** or **Audio Input Capture (PipeWire / PulseAudio)** source in OBS and select **AVerMedia GC550 (`GC550 HDMI Audio`)**.
 
+### Mixed Audio or Feedback in OBS
+The GC550 may be available through both ALSA and PipeWire / PulseAudio. In OBS, capture it through one path only: use a dedicated GC550 audio source, or select it as the global **Mic/Aux** device, but not both. The device may appear under a PipeWire name such as `GC550 Pro`.
+
+If you only want HDMI capture audio, disable **Desktop Audio** and any laptop microphone input. Desktop Audio captures the computer's playback monitor, which can include audio OBS is monitoring and feed it back into the recording. Set the GC550 source's **Audio Monitoring** to **Monitor Off** unless monitoring is intentional.
+
 ### No Audio When Previewing with `mpv`
 Because Linux separates V4L2 video (`/dev/avermedia-gc550`) and ALSA audio (`hw:GC550Audio,0`), running `mpv av://v4l2:/dev/avermedia-gc550` only opens the video stream. Furthermore, passing `--audio-file=av://alsa:hw:GC550Audio,0` directly to `mpv` can stall audio playback because V4L2 timestamps use `CLOCK_MONOTONIC` (system uptime) while FFmpeg's `alsa` demuxer uses `CLOCK_REALTIME` (Unix epoch).
 

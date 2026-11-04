@@ -15,7 +15,7 @@ This file tracks planned features, technical design notes, and future experiment
 - [ ] Field-test on primary production gaming rig.
 
 ## Stability Hardening Follow-up
-- [x] Fill the uncopied tail of accepted short V4L2 frames with neutral YUYV black to prevent stale buffer contents (implemented in `v0.1.2`; no naturally short span was observed during testing).
+- [x] Fill the uncopied tail of accepted short V4L2 frames with neutral YUYV black to prevent stale buffer contents (implemented in `v0.1.2`; no naturally accepted short span was observed, so this path was not exercised).
 - [x] Collect a real-GC550 SAV→EAV span histogram across sustained 1080p60 capture and a physical reconnect on Niri (CachyOS `7.3.1-1`). Before reconnect, all 28,189 candidates fell in the `4,147,200..4,147,455` byte bin. After reconnect, 27,465 of 27,466 candidates fell in that bin; one was below the `4,130,816` byte acceptance limit and was rejected. Both sessions ended with zero desyncs. No accepted short span was observed, so the neutral-tail fill was not exercised. Keep the protocol-derived ±16 KiB acceptance window.
 - [ ] In a disposable VM or USB test setup, exercise command replies with exact, short, oversized, and absent payloads and verify each fails or succeeds with the expected error. Do not use the daily-use laptop for fault injection.
 - [ ] Recheck parser callback serialization on each newly supported HCD/kernel combination. Niri's CachyOS 7.3.1-1 xHCI trace is documented in [`CONTRIBUTING.md`](CONTRIBUTING.md), but generic USB completion ordering is not guaranteed across all HCDs.
