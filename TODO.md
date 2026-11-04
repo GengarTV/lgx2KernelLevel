@@ -15,7 +15,8 @@ This file tracks planned features, technical design notes, and future experiment
 - [ ] Field-test on primary production gaming rig.
 
 ## Stability Hardening Follow-up
-- [ ] Collect a real-GC550 SAV→EAV span histogram across sustained 1080p60 capture and reconnects. The parser retains the protocol-derived ±16 KiB acceptance window; do not tighten it until actual device spans are measured. Accepted short spans now have their uncopied V4L2 tail filled with neutral black.
+- [x] Fill the uncopied tail of accepted short V4L2 frames with neutral YUYV black to prevent stale buffer contents (implemented in `v0.1.2`; no naturally short span was observed during testing).
+- [ ] Collect a real-GC550 SAV→EAV span histogram across sustained 1080p60 capture and reconnects. Keep the protocol-derived ±16 KiB acceptance window until actual device spans are measured; do not narrow it based only on the reference stream.
 - [ ] In a disposable VM or USB test setup, exercise command replies with exact, short, oversized, and absent payloads and verify each fails or succeeds with the expected error. Do not use the daily-use laptop for fault injection.
 - [ ] Recheck parser callback serialization on each newly supported HCD/kernel combination. Niri's CachyOS 7.3.1-1 xHCI trace is documented in [`CONTRIBUTING.md`](CONTRIBUTING.md), but generic USB completion ordering is not guaranteed across all HCDs.
 
