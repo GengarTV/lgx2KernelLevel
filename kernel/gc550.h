@@ -20,8 +20,10 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/usb.h>
+#include <linux/kref.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
+#include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/videodev2.h>
 #include <media/v4l2-device.h>
@@ -34,7 +36,7 @@
 #include <sound/pcm.h>
 
 #define GC550_DRIVER_NAME	"gc550"
-#define GC550_DRIVER_VERSION	"0.1.0"
+#define GC550_DRIVER_VERSION	"0.1.1"
 
 /* USB Vendor & Product IDs */
 #define USB_VID_AVERMEDIA	0x07ca
@@ -130,6 +132,7 @@ struct gc550_stream_parser {
 
 /* Main Device Structure */
 struct gc550_dev {
+	struct kref ref;
 	struct usb_device *udev;
 	struct usb_interface *intf;
 
@@ -142,7 +145,9 @@ struct gc550_dev {
 	/* Locks */
 	struct mutex v4l2_lock;	  /* Protects V4L2 ioctls and vb2 queue */
 	struct mutex cmd_lock;	  /* Protects EP 0x01 / 0x81 command bridge */
+	struct mutex stream_mutex; /* Serializes process-context stream setup/stop */
 	spinlock_t queue_lock;	  /* Protects active buffer list */
+	spinlock_t stream_lock;	  /* Gates URB submission against stop/disconnect */
 
 	/* Command Bridge Buffers (DMA-safe kmalloc) */
 	u8 *cmd_out_buf;
@@ -157,12 +162,17 @@ struct gc550_dev {
 	bool streaming;
 	bool disconnected;
 	bool is_bootstrapped;
+	bool v4l2_registered;
+	bool v4l2_ref_held;
 
 	/* ALSA Audio Subsystem */
 	struct snd_card *snd_card;
 	struct snd_pcm *snd_pcm;
 	struct snd_pcm_substream *alsa_substream;
 	spinlock_t alsa_lock;
+	wait_queue_head_t alsa_wait;
+	unsigned int alsa_inflight;
+	bool alsa_disconnected;
 	size_t alsa_hw_ptr;
 	size_t alsa_period_pos;
 };
@@ -183,6 +193,7 @@ void gc550_log_signal_status(struct gc550_dev *dev);
 /* Function Prototypes - gc550-video.c */
 int gc550_video_register(struct gc550_dev *dev);
 void gc550_video_unregister(struct gc550_dev *dev);
+void gc550_video_stop_device(struct gc550_dev *dev);
 void gc550_parser_reset(struct gc550_stream_parser *parser);
 void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len);
 
@@ -190,5 +201,6 @@ void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len)
 int gc550_audio_register(struct gc550_dev *dev);
 void gc550_audio_unregister(struct gc550_dev *dev);
 void gc550_audio_push_samples(struct gc550_dev *dev, const u8 *data, size_t len);
+void gc550_dev_release(struct kref *ref);
 
 #endif /* _GC550_H_ */

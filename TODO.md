@@ -4,16 +4,14 @@ This file tracks planned features, technical design notes, and future experiment
 
 ---
 
-## Current Milestone: Field Testing `v0.1.0` (1080p60 Baseline)
+## Current Milestone: `v0.1.1` Lifecycle Verification (1080p60 Baseline)
 - [x] Verify probe, cold bootstrap, V4L2 video (`1080p60 YUYV`), and ALSA audio (`48 kHz S16_LE`) in QEMU/KVM CachyOS VM (`07ca:4710`).
 - [x] Field-test bare-metal performance, frame pacing (`60.02 fps`, `0` desyncs), and audio sync on a secondary physical Linux machine (laptop) (When I can find my god damn extra USB 3.0 A to Micro-B SuperSpeed cable! I REALLY don't want to untangle my cable management from my primary production rig — *Update: Cable found! Verified on `niri` laptop with Raspberry Pi 3B & Nintendo Switch: `776,295` continuous 1080p60 frames with `0` desyncs + `48 kHz` stereo ALSA audio!*).
-- [ ] **Fix USB Hot-Unplug Use-After-Free While Streaming (`struct kref` + `v4l2_dev.release`)**:
+- [x] **Fix USB Hot-Unplug Use-After-Free While Streaming (`struct kref` + `v4l2_dev.release`)**:
   - **Issue Discovered on `niri` (`2026-11-03`)**: Hot-unplugging the USB 3.0 cable while `mpv` had `/dev/video2` actively open and streaming triggered a `NULL pointer dereference` (`RIP: v4l2_ioctl+0x24/0x60`) in `mpv`'s `demux` thread (`PID 36588`), leaving `/dev/video2` zombie-locked and registering `/dev/video3` on replug.
   - **Root Cause**: [`gc550_disconnect()`](kernel/gc550-core.c) currently calls `kfree(dev)` immediately after `gc550_video_unregister(dev)` while userspace file descriptors (`/dev/videoX`, `/dev/snd/pcmC*`) are still open and mid-`ioctl`.
-  - **Fix Plan**:
-    1. Add `struct kref ref` to [`struct gc550_dev`](kernel/gc550.h).
-    2. Set `dev->v4l2_dev.release` (called when the last `/dev/videoX` fd closes) and ALSA's `card->private_free` (called via `snd_card_free_when_closed()`) to drop references via `kref_put(&dev->ref, gc550_dev_release)`.
-    3. In `gc550_disconnect()`, kill active URBs (`gc550_free_stream_urbs`), call `vb2_queue_error()`, `video_unregister_device()`, `v4l2_device_disconnect()`, `v4l2_device_put()`, and `kref_put()` so `kfree(dev)` is deferred until all open userspace fds have closed.
+  - **Implemented and verified in `v0.1.1` on niri:** Device kref release is deferred through V4L2 and ALSA lifetimes; disconnect closes the URB submission gate, drains URBs and in-flight ALSA callbacks, and makes VB2 stop cleanup idempotent.
+  - **Unplug test:** OBS was capturing video and audio. Disconnect completed after `29,629` frames with `0` desyncs and no kernel faults; replug registered the device and completed a cold bootstrap.
 - [ ] Field-test on primary production gaming rig.
 
 ---
@@ -46,7 +44,7 @@ Currently, [`kernel/gc550-audio.c`](kernel/gc550-audio.c) hardcodes `SNDRV_PCM_R
 
 ## Planned Feature: Multi-Resolution / Low-Resolution Support (`720p`, `576p`, `480p`, `640x480`)
 
-Upstream [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) lists `Low resolution(?) support [ ]` in its TODO. Below is the technical investigation and implementation plan for adding lower-resolution support to `gc550.ko` once `v0.1.0` bare-metal field testing is complete.
+Upstream [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) lists `Low resolution(?) support [ ]` in its TODO. Below is the technical investigation and implementation plan for adding lower-resolution support to `gc550.ko` after `v0.1.1` lifecycle verification.
 
 ### 1. Why Lower Resolutions Currently Drop in the Parser
 1. **HDMI Receiver (`ADV7604`) Already Locks to Lower Resolutions:**

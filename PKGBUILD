@@ -3,7 +3,7 @@
 
 pkgname=avermedia-gc550-dkms
 _pkgname=avermedia-gc550
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="AVerMedia Live Gamer Extreme (GC550) V4L2 + ALSA USB 3.0 Capture Kernel Driver (DKMS)"
 arch=('x86_64' 'aarch64')

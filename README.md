@@ -91,7 +91,7 @@ Tested on bare-metal CachyOS (`7.3.1-1-cachyos`, Wayland) using a millisecond co
 3. **Audio Requires Active Video Capture:** Because the GC550 hardware multiplexes HDMI audio packets (`00 FF FF 58`) inside the USB 3.0 video bulk stream (`EP 0x83 IN`), `/dev/videoX` must be actively streaming (e.g. open in OBS) for audio samples to flow into the ALSA capture device.
 4. **Fixed 1920×1080p60 V4L2 Format:** The driver currently exposes a fixed `1920×1080` `YUYV` format (`4,147,200` bytes/frame), matching the preferred EDID mode advertised by the card.
 5. **Cold Bootstrap Delay (~3.3 Seconds):** The very first time `/dev/videoX` is opened after plugging in the USB cable, the driver sends 6,576 I2C setup commands over USB (~3.3 seconds). Subsequent opens skip the bootstrap and start instantaneously.
-6. **Close Capture Apps Before Unplugging USB (`v0.1.0`):** Hot-unplugging the **HDMI** cable while streaming works cleanly, but hot-unplugging the **USB 3.0** cable while an application (`OBS`, `mpv`) still holds `/dev/videoX` open can trigger a use-after-free in `v4l2_ioctl` (tracked in [`TODO.md`](TODO.md) for reference-counted `v4l2_dev.release` teardown). Always close `OBS` / `mpv` before unplugging the USB cable.
+6. **USB Hot-Unplug (`v0.1.1`):** Device lifetime is retained across open V4L2 and ALSA handles, and stream URBs are stopped before their resources are released. Hot-unplug during active OBS video and audio capture was verified on bare-metal CachyOS with `29,629` frames, `0` desyncs, and no kernel faults. Reopen or reselect the capture devices after reconnecting the USB cable.
 
 ---
 
@@ -124,7 +124,7 @@ cd lgx2KernelLevel
 `./install.sh` automatically detects your Linux distribution and selects the best installation method:
 1. **On Arch Linux / CachyOS / EndeavourOS / Manjaro (Default: `PKGBUILD` + `pacman` + `DKMS`)**:
    - Runs `makepkg -si` using the included [`PKGBUILD`](PKGBUILD) to build and install the native **`avermedia-gc550-dkms`** package.
-   - `pacman` automatically installs `dkms` if missing, tracks ownership of all files (`/usr/src/avermedia-gc550-0.1.0` and `/usr/lib/udev/rules.d/99-avermedia-gc550.rules`), compiles `gc550.ko` via its DKMS hook, and loads the module immediately.
+   - `pacman` automatically installs `dkms` if missing, tracks ownership of all files (`/usr/src/avermedia-gc550-0.1.1` and `/usr/lib/udev/rules.d/99-avermedia-gc550.rules`), compiles `gc550.ko` via its DKMS hook, and loads the module immediately.
 2. **On Other Linux Distributions (Ubuntu, Debian, Fedora, etc. — Default: Direct Kernel Build)**:
    - Compiles `gc550.ko` against `/lib/modules/$(uname -r)/build` (`make modules && make install`), installs the udev rules, and loads the module immediately.
 

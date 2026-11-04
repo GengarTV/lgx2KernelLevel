@@ -11,6 +11,15 @@
 #include <linux/slab.h>
 #include "gc550.h"
 
+void gc550_dev_release(struct kref *ref)
+{
+	struct gc550_dev *dev = container_of(ref, struct gc550_dev, ref);
+
+	usb_put_intf(dev->intf);
+	usb_put_dev(dev->udev);
+	kfree(dev);
+}
+
 static const struct usb_device_id gc550_usb_table[] = {
 	{ USB_DEVICE(USB_VID_AVERMEDIA, USB_PID_GC550) },
 	{ USB_DEVICE(USB_VID_AVERMEDIA, USB_PID_GC550_ALT) },
@@ -44,10 +53,13 @@ static int gc550_probe(struct usb_interface *intf,
 	if (!dev)
 		return -ENOMEM;
 
+	kref_init(&dev->ref);
 	dev->udev = usb_get_dev(udev);
-	dev->intf = intf;
+	dev->intf = usb_get_intf(intf);
 	mutex_init(&dev->v4l2_lock);
 	mutex_init(&dev->cmd_lock);
+	mutex_init(&dev->stream_mutex);
+	spin_lock_init(&dev->stream_lock);
 
 	usb_set_intfdata(intf, dev);
 
@@ -81,31 +93,45 @@ err_free_cmd:
 	gc550_cmd_free(dev);
 err_put_usb:
 	usb_set_intfdata(intf, NULL);
-	usb_put_dev(dev->udev);
-	kfree(dev);
+	kref_put(&dev->ref, gc550_dev_release);
 	return ret;
 }
 
 static void gc550_disconnect(struct usb_interface *intf)
 {
 	struct gc550_dev *dev = usb_get_intfdata(intf);
+	unsigned long flags;
 
 	if (!dev)
 		return;
 
 	dev_info(&intf->dev, "AVerMedia GC550 disconnecting\n");
+	usb_set_intfdata(intf, NULL);
+
+	/*
+	 * Close the submission gate before waiting for userspace operations.
+	 * Completion callbacks serialize their GFP_ATOMIC resubmission with this
+	 * lock, so none can submit another URB after this transition.
+	 */
+	mutex_lock(&dev->stream_mutex);
+	spin_lock_irqsave(&dev->stream_lock, flags);
+	dev->disconnected = true;
+	dev->streaming = false;
+	spin_unlock_irqrestore(&dev->stream_lock, flags);
+	mutex_unlock(&dev->stream_mutex);
+
+	if (dev->v4l2_registered)
+		v4l2_device_disconnect(&dev->v4l2_dev);
 
 	mutex_lock(&dev->v4l2_lock);
-	dev->disconnected = true;
 	vb2_queue_error(&dev->vb_queue);
+	gc550_video_stop_device(dev);
 	gc550_audio_unregister(dev);
 	gc550_video_unregister(dev);
 	mutex_unlock(&dev->v4l2_lock);
 
 	gc550_cmd_free(dev);
-	usb_set_intfdata(intf, NULL);
-	usb_put_dev(dev->udev);
-	kfree(dev);
+	kref_put(&dev->ref, gc550_dev_release);
 }
 
 static struct usb_driver gc550_usb_driver = {

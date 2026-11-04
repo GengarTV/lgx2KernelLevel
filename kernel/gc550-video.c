@@ -366,10 +366,15 @@ void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len)
 static void gc550_urb_complete(struct urb *urb)
 {
 	struct gc550_dev *dev = urb->context;
+	unsigned long flags;
 	int ret;
 
-	if (!dev->streaming || dev->disconnected)
+	spin_lock_irqsave(&dev->stream_lock, flags);
+	if (!dev->streaming || dev->disconnected) {
+		spin_unlock_irqrestore(&dev->stream_lock, flags);
 		return;
+	}
+	spin_unlock_irqrestore(&dev->stream_lock, flags);
 
 	switch (urb->status) {
 	case 0:
@@ -396,8 +401,17 @@ static void gc550_urb_complete(struct urb *urb)
 		break;
 	}
 
-	ret = usb_submit_urb(urb, GFP_ATOMIC);
-	if (ret < 0 && ret != -ENODEV)
+	/*
+	 * Keep the gate lock across callback resubmission. GFP_ATOMIC is required
+	 * here; disconnect/STREAMOFF takes the same lock before killing URBs.
+	 */
+	spin_lock_irqsave(&dev->stream_lock, flags);
+	if (dev->streaming && !dev->disconnected)
+		ret = usb_submit_urb(urb, GFP_ATOMIC);
+	else
+		ret = -ESHUTDOWN;
+	spin_unlock_irqrestore(&dev->stream_lock, flags);
+	if (ret < 0 && ret != -ENODEV && ret != -ESHUTDOWN)
 		dev_err_ratelimited(&dev->intf->dev,
 				    "Failed to resubmit stream URB: %d\n", ret);
 }
@@ -420,9 +434,9 @@ static void gc550_free_stream_urbs(struct gc550_dev *dev)
 	dev->parser.pair_buf = NULL;
 }
 
-static int gc550_alloc_and_submit_urbs(struct gc550_dev *dev)
+static int gc550_alloc_stream_urbs(struct gc550_dev *dev)
 {
-	int i, ret;
+	int i;
 
 	dev->parser.pair_buf = kmalloc(GC550_PAIR_BUF_SIZE, GFP_KERNEL);
 	if (!dev->parser.pair_buf)
@@ -447,12 +461,18 @@ static int gc550_alloc_and_submit_urbs(struct gc550_dev *dev)
 				  gc550_urb_complete, dev);
 	}
 
+	return 0;
+}
+
+static int gc550_submit_stream_urbs(struct gc550_dev *dev)
+{
+	int i, ret;
+
 	for (i = 0; i < GC550_NUM_URBS; i++) {
 		ret = usb_submit_urb(dev->urbs[i], GFP_KERNEL);
 		if (ret < 0) {
 			dev_err(&dev->intf->dev,
 				"Failed to submit stream URB %d: %d\n", i, ret);
-			gc550_free_stream_urbs(dev);
 			return ret;
 		}
 	}
@@ -510,27 +530,56 @@ static void gc550_return_all_buffers(struct gc550_dev *dev,
 				     enum vb2_buffer_state state)
 {
 	struct gc550_buffer *buf, *node;
+	LIST_HEAD(done_list);
 	unsigned long flags;
 
 	spin_lock_irqsave(&dev->queue_lock, flags);
 	if (dev->cur_buf) {
-		vb2_buffer_done(&dev->cur_buf->vb.vb2_buf, state);
+		list_add_tail(&dev->cur_buf->list, &done_list);
 		dev->cur_buf = NULL;
 	}
-	list_for_each_entry_safe(buf, node, &dev->buf_list, list) {
-		list_del(&buf->list);
+	list_splice_tail_init(&dev->buf_list, &done_list);
+	spin_unlock_irqrestore(&dev->queue_lock, flags);
+
+	list_for_each_entry_safe(buf, node, &done_list, list) {
+		list_del_init(&buf->list);
 		vb2_buffer_done(&buf->vb.vb2_buf, state);
 	}
-	spin_unlock_irqrestore(&dev->queue_lock, flags);
+}
+
+static void gc550_stop_stream_resources(struct gc550_dev *dev,
+					enum vb2_buffer_state state)
+{
+	unsigned long flags;
+
+	/* The callback resubmit gate is closed before kill waits for callbacks. */
+	mutex_lock(&dev->stream_mutex);
+	spin_lock_irqsave(&dev->stream_lock, flags);
+	dev->streaming = false;
+	spin_unlock_irqrestore(&dev->stream_lock, flags);
+	gc550_free_stream_urbs(dev);
+	mutex_unlock(&dev->stream_mutex);
+
+	gc550_return_all_buffers(dev, state);
+}
+
+void gc550_video_stop_device(struct gc550_dev *dev)
+{
+	gc550_stop_stream_resources(dev, VB2_BUF_STATE_ERROR);
 }
 
 static int gc550_start_streaming(struct vb2_queue *vq, unsigned int count)
 {
 	struct gc550_dev *dev = vb2_get_drv_priv(vq);
+	unsigned long flags;
 	int ret;
 
 	gc550_parser_reset(&dev->parser);
 	dev->parser.frame_sequence = 0;
+	if (READ_ONCE(dev->disconnected)) {
+		gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
+		return -ENODEV;
+	}
 
 	ret = gc550_bootstrap_hw(dev);
 	if (ret < 0) {
@@ -539,24 +588,37 @@ static int gc550_start_streaming(struct vb2_queue *vq, unsigned int count)
 	}
 	gc550_log_signal_status(dev);
 
-	dev->streaming = true;
-	ret = gc550_alloc_and_submit_urbs(dev);
-	if (ret < 0) {
-		dev->streaming = false;
-		gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
-		return ret;
+	mutex_lock(&dev->stream_mutex);
+	ret = gc550_alloc_stream_urbs(dev);
+	if (ret == 0) {
+		spin_lock_irqsave(&dev->stream_lock, flags);
+		if (dev->disconnected)
+			ret = -ENODEV;
+		else
+			dev->streaming = true;
+		spin_unlock_irqrestore(&dev->stream_lock, flags);
 	}
+	if (ret == 0)
+		ret = gc550_submit_stream_urbs(dev);
+	if (ret < 0) {
+		spin_lock_irqsave(&dev->stream_lock, flags);
+		dev->streaming = false;
+		spin_unlock_irqrestore(&dev->stream_lock, flags);
+		gc550_free_stream_urbs(dev);
+	}
+	mutex_unlock(&dev->stream_mutex);
 
-	return 0;
+	if (ret < 0)
+		gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
+
+	return ret;
 }
 
 static void gc550_stop_streaming(struct vb2_queue *vq)
 {
 	struct gc550_dev *dev = vb2_get_drv_priv(vq);
 
-	dev->streaming = false;
-	gc550_free_stream_urbs(dev);
-	gc550_return_all_buffers(dev, VB2_BUF_STATE_ERROR);
+	gc550_stop_stream_resources(dev, VB2_BUF_STATE_ERROR);
 	dev_info(&dev->intf->dev,
 		 "Stream stopped: frames=%llu, desyncs=%u, swap_mode=%d\n",
 		 dev->parser.frame_sequence, dev->parser.desync_count,
@@ -572,6 +634,15 @@ static const struct vb2_ops gc550_vb2_ops = {
 };
 
 /* V4L2 IOCTL Operations */
+static void gc550_v4l2_release(struct v4l2_device *v4l2_dev)
+{
+	struct gc550_dev *dev = container_of(v4l2_dev, struct gc550_dev,
+					     v4l2_dev);
+
+	/* The V4L2 kref owns this device reference until its final put. */
+	kref_put(&dev->ref, gc550_dev_release);
+}
+
 static int gc550_vidioc_querycap(struct file *file, void *priv,
 				 struct v4l2_capability *cap)
 {
@@ -756,9 +827,13 @@ int gc550_video_register(struct gc550_dev *dev)
 	dev->pix_fmt.quantization = V4L2_QUANTIZATION_LIM_RANGE;
 	dev->pix_fmt.xfer_func = V4L2_XFER_FUNC_709;
 
+	dev->v4l2_dev.release = gc550_v4l2_release;
 	ret = v4l2_device_register(&dev->intf->dev, &dev->v4l2_dev);
 	if (ret < 0)
 		return ret;
+	kref_get(&dev->ref);
+	dev->v4l2_registered = true;
+	dev->v4l2_ref_held = true;
 
 	vq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	vq->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF | VB2_READ;
@@ -772,7 +847,7 @@ int gc550_video_register(struct gc550_dev *dev)
 
 	ret = vb2_queue_init(vq);
 	if (ret < 0) {
-		v4l2_device_unregister(&dev->v4l2_dev);
+		gc550_video_unregister(dev);
 		return ret;
 	}
 
@@ -791,7 +866,7 @@ int gc550_video_register(struct gc550_dev *dev)
 
 	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret < 0) {
-		v4l2_device_unregister(&dev->v4l2_dev);
+		gc550_video_unregister(dev);
 		return ret;
 	}
 
@@ -802,5 +877,12 @@ void gc550_video_unregister(struct gc550_dev *dev)
 {
 	if (video_is_registered(&dev->vdev))
 		video_unregister_device(&dev->vdev);
-	v4l2_device_unregister(&dev->v4l2_dev);
+	if (dev->v4l2_registered) {
+		v4l2_device_unregister(&dev->v4l2_dev);
+		dev->v4l2_registered = false;
+	}
+	if (dev->v4l2_ref_held) {
+		dev->v4l2_ref_held = false;
+		v4l2_device_put(&dev->v4l2_dev);
+	}
 }

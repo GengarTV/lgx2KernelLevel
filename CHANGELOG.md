@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.1.1] - 2026-11-04
+
+### Fixed
+- **Safe USB hot-unplug with open V4L2 and ALSA handles**:
+  - Added deferred `gc550_dev` lifetime references for V4L2 and ALSA device lifetimes, retaining the USB device and interface until final release.
+  - Serialized initial URB submissions against stop/disconnect and gated callback resubmissions without sleeping in completion context.
+  - Made stream resource and VB2 buffer teardown idempotent; disconnect now waits for URB callbacks and in-flight ALSA audio callbacks before freeing their resources.
+- Bumped the DKMS, installer, driver, and pacman package version to `0.1.1`.
+
+### Verified
+- Built with `W=1` against CachyOS kernel `7.3.1-1-cachyos`.
+- Tested on niri with OBS capturing video and audio during USB unplug: `29,629` frames, `0` desyncs, and no kernel faults. Replug registered the device and completed cold bootstrap.
+
 ## [0.1.0] - 2026-11-02
 
 ### Added
