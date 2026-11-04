@@ -191,10 +191,10 @@ is saturated just above the largest accepted span so a missing EAV cannot
 wrap the counter and make malformed input look like a valid frame. The
 tolerance is retained pending a measured span distribution from the GC550;
 the reference stream alone does not establish the device's full span range.
-Because the parser copies at most one frame but accepts a span shorter than a
-full frame, a short accepted span can leave the end of the output buffer
-containing old data. Measure real-device SAV→EAV spans before narrowing the
-tolerance or changing how such frames are handled.
+When an accepted span is shorter than a frame, the parser fills the uncopied
+tail with limited-range YUYV black before delivering the buffer, so reused
+VB2 memory cannot expose pixels from an earlier frame. Measure real-device
+SAV→EAV spans before narrowing the tolerance.
 
 - Video data between a valid SAV and its matching EAV is flushed to the frame
   buffer (via `ParseAVerData::copyVideoDataToFrameBuffer`, dispatched through a

@@ -39,6 +39,8 @@
 #define GC550_SWAP_SPAN_LIMIT	(32 * 1024)
 #define GC550_MAX_FRAME_SPAN	(GC550_FRAME_SIZE + 0x4000)
 
+static const u8 gc550_yuyv_black[4] = { 16, 128, 16, 128 };
+
 void gc550_parser_reset(struct gc550_stream_parser *parser)
 {
 	parser->state = GC550_STATE_IDLE;
@@ -101,6 +103,7 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 	struct gc550_stream_parser *p = &dev->parser;
 	struct gc550_buffer *done_buf = NULL;
 	unsigned long flags;
+	size_t i;
 
 	/*
 	 * Detect 16 KiB FX3 ping-pong DMA swap:
@@ -142,6 +145,14 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 	spin_unlock_irqrestore(&dev->queue_lock, flags);
 
 	if (done_buf) {
+		if (p->video_pos < GC550_FRAME_SIZE) {
+			u8 *vbuf = vb2_plane_vaddr(&done_buf->vb.vb2_buf, 0);
+
+			if (vbuf)
+				for (i = p->video_pos; i < GC550_FRAME_SIZE; i++)
+					vbuf[i] = gc550_yuyv_black[i & 3];
+		}
+
 		done_buf->vb.vb2_buf.timestamp = ktime_get_ns();
 		done_buf->vb.field = V4L2_FIELD_NONE;
 		done_buf->vb.sequence = p->frame_sequence++;

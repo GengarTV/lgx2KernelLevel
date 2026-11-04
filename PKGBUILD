@@ -3,8 +3,9 @@
 
 pkgname=avermedia-gc550-dkms
 _pkgname=avermedia-gc550
+_dkmsver=0.1.1SH
 pkgver=0.1.1
-pkgrel=1
+pkgrel=2
 pkgdesc="AVerMedia Live Gamer Extreme (GC550) V4L2 + ALSA USB 3.0 Capture Kernel Driver (DKMS)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/GengarTV/lgx2KernelLevel"
@@ -15,7 +16,7 @@ conflicts=('avermedia-gc550')
 
 package() {
 	local src_root="${startdir}"
-	local dkms_dest="${pkgdir}/usr/src/${_pkgname}-${pkgver}"
+	local dkms_dest="${pkgdir}/usr/src/${_pkgname}-${_dkmsver}"
 
 	install -dm755 "${dkms_dest}/kernel"
 	install -Dm644 "${src_root}/Makefile" "${dkms_dest}/Makefile"
