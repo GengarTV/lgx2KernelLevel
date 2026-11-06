@@ -38,8 +38,31 @@
 #define GC550_PAIR_BUF_SIZE	(2 * GC550_FX3_DMA_BUF_SIZE) /* 32 KiB */
 #define GC550_SWAP_SPAN_LIMIT	(32 * 1024)
 #define GC550_MAX_FRAME_SPAN	(GC550_FRAME_SIZE + 0x4000)
+#define GC550_FRAME_SPAN_TOLERANCE	0x4000
 
 static const u8 gc550_yuyv_black[4] = { 16, 128, 16, 128 };
+
+static const struct v4l2_frmsize_discrete gc550_frame_sizes[] = {
+	{ GC550_DEFAULT_WIDTH, GC550_DEFAULT_HEIGHT },
+	{ 1280, 720 },
+	{ 720, 576 },
+	{ 720, 480 },
+	{ 640, 480 },
+};
+
+static const struct v4l2_frmsize_discrete *
+gc550_find_frame_size(u32 width, u32 height)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(gc550_frame_sizes); i++) {
+		if (gc550_frame_sizes[i].width == width &&
+		    gc550_frame_sizes[i].height == height)
+			return &gc550_frame_sizes[i];
+	}
+
+	return NULL;
+}
 
 void gc550_parser_reset(struct gc550_stream_parser *parser)
 {
@@ -72,6 +95,7 @@ static void gc550_append_video_bytes(struct gc550_dev *dev,
 	struct gc550_stream_parser *p = &dev->parser;
 	unsigned long flags;
 	void *vbuf;
+	size_t frame_size = dev->pix_fmt.sizeimage;
 	size_t room;
 
 	if (!len)
@@ -84,9 +108,9 @@ static void gc550_append_video_bytes(struct gc550_dev *dev,
 		list_del(&dev->cur_buf->list);
 	}
 
-	if (dev->cur_buf && p->video_pos < GC550_FRAME_SIZE) {
+	if (dev->cur_buf && p->video_pos < frame_size) {
 		vbuf = vb2_plane_vaddr(&dev->cur_buf->vb.vb2_buf, 0);
-		room = GC550_FRAME_SIZE - p->video_pos;
+		room = frame_size - p->video_pos;
 		if (vbuf)
 			memcpy((u8 *)vbuf + p->video_pos, src, min(len, room));
 	}
@@ -102,6 +126,7 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 {
 	struct gc550_stream_parser *p = &dev->parser;
 	struct gc550_buffer *done_buf = NULL;
+	size_t frame_size = dev->pix_fmt.sizeimage;
 	unsigned long flags;
 	size_t i;
 
@@ -128,11 +153,11 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 	p->swap_votes = 0;
 
 	/*
-	 * Validate span size is within a 16 KiB FX3 DMA quantum of one
-	 * complete 1080p YUYV frame (4,147,200 bytes).
+	 * Accept a span within one 16 KiB FX3 DMA quantum of the selected
+	 * V4L2 frame size.
 	 */
-	if (p->video_pos < GC550_FRAME_SIZE - 0x4000 ||
-	    p->video_pos > GC550_MAX_FRAME_SPAN) {
+	if (p->video_pos < frame_size - GC550_FRAME_SPAN_TOLERANCE ||
+	    p->video_pos > frame_size + GC550_FRAME_SPAN_TOLERANCE) {
 		p->video_pos = 0;
 		return;
 	}
@@ -145,11 +170,11 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 	spin_unlock_irqrestore(&dev->queue_lock, flags);
 
 	if (done_buf) {
-		if (p->video_pos < GC550_FRAME_SIZE) {
+		if (p->video_pos < frame_size) {
 			u8 *vbuf = vb2_plane_vaddr(&done_buf->vb.vb2_buf, 0);
 
 			if (vbuf)
-				for (i = p->video_pos; i < GC550_FRAME_SIZE; i++)
+				for (i = p->video_pos; i < frame_size; i++)
 					vbuf[i] = gc550_yuyv_black[i & 3];
 		}
 
@@ -157,7 +182,7 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 		done_buf->vb.field = V4L2_FIELD_NONE;
 		done_buf->vb.sequence = p->frame_sequence++;
 		vb2_set_plane_payload(&done_buf->vb.vb2_buf, 0,
-				      GC550_FRAME_SIZE);
+				      frame_size);
 		vb2_buffer_done(&done_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
 	}
 
@@ -692,12 +717,18 @@ static int gc550_vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 static int gc550_vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 					struct v4l2_format *f)
 {
-	f->fmt.pix.width = GC550_DEFAULT_WIDTH;
-	f->fmt.pix.height = GC550_DEFAULT_HEIGHT;
+	const struct v4l2_frmsize_discrete *size;
+
+	size = gc550_find_frame_size(f->fmt.pix.width, f->fmt.pix.height);
+	if (!size)
+		size = &gc550_frame_sizes[0];
+
+	f->fmt.pix.width = size->width;
+	f->fmt.pix.height = size->height;
 	f->fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
 	f->fmt.pix.field = V4L2_FIELD_NONE;
-	f->fmt.pix.bytesperline = GC550_DEFAULT_WIDTH * GC550_BYTES_PER_PIXEL;
-	f->fmt.pix.sizeimage = GC550_FRAME_SIZE;
+	f->fmt.pix.bytesperline = size->width * GC550_BYTES_PER_PIXEL;
+	f->fmt.pix.sizeimage = f->fmt.pix.bytesperline * size->height;
 	f->fmt.pix.colorspace = V4L2_COLORSPACE_REC709;
 	f->fmt.pix.ycbcr_enc = V4L2_YCBCR_ENC_709;
 	f->fmt.pix.quantization = V4L2_QUANTIZATION_LIM_RANGE;
@@ -721,12 +752,12 @@ static int gc550_vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 static int gc550_vidioc_enum_framesizes(struct file *file, void *priv,
 					struct v4l2_frmsizeenum *fsize)
 {
-	if (fsize->index > 0 || fsize->pixel_format != V4L2_PIX_FMT_YUYV)
+	if (fsize->index >= ARRAY_SIZE(gc550_frame_sizes) ||
+	    fsize->pixel_format != V4L2_PIX_FMT_YUYV)
 		return -EINVAL;
 
 	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
-	fsize->discrete.width = GC550_DEFAULT_WIDTH;
-	fsize->discrete.height = GC550_DEFAULT_HEIGHT;
+	fsize->discrete = gc550_frame_sizes[fsize->index];
 	return 0;
 }
 
@@ -735,8 +766,7 @@ static int gc550_vidioc_enum_frameintervals(struct file *file, void *priv,
 {
 	if (fival->index > 0 ||
 	    fival->pixel_format != V4L2_PIX_FMT_YUYV ||
-	    fival->width != GC550_DEFAULT_WIDTH ||
-	    fival->height != GC550_DEFAULT_HEIGHT)
+	    !gc550_find_frame_size(fival->width, fival->height))
 		return -EINVAL;
 
 	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
