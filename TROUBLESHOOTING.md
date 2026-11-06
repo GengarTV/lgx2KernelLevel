@@ -82,7 +82,8 @@ UEFI **Secure Boot** is enabled, which blocks unsigned out-of-tree kernel module
    - If **`HDCP=YES`**: The HDMI source is encrypting the video with **HDCP** (High-bandwidth Digital Content Protection). Neither the official Windows driver nor this driver captures HDCP-protected streams:
      - **PS4 / PS5:** Go to *Settings → System → HDMI → Enable HDCP* and toggle it **OFF**.
      - **MacBooks / Apple TV:** macOS frequently forces HDCP on HDMI outputs.
-   - If **`signal=NONE`** or resolution is not `1920x1080p`: Ensure your source device is set to **1080p (1920×1080) @ 60 Hz** and **SDR** (HDR disabled).
+   - If **`signal=NONE`**: Check that the source is active, the HDMI cable is connected to **HDMI IN**, and HDR is disabled.
+   - If the signal is locked but OBS is black, set the OBS V4L2 source's **Resolution/FPS Type** to **Custom** and choose the size matching the input. Supported sizes are `1920x1080`, `1280x720`, `720x576`, `720x480`, and `640x480`; the driver does not switch the V4L2 format automatically when the source timing changes.
 
 ---
 

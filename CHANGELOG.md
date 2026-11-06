@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.1.3] - 2026-11-06
+
+### Added
+- Expose discrete YUYV capture sizes for `1920x1080`, `1280x720`, `720x576`, `720x480`, and `640x480`.
+- Validate frame spans and bound buffer copies using the selected V4L2 `sizeimage`; retain the existing ±16 KiB span tolerance and neutral-black tail fill.
+
+### Verified
+- Built with Clang 23 and `W=1` against CachyOS kernel `7.3.1-1-cachyos`; checkpatch and `git diff --check` passed.
+- Tested on Niri with the GC550 and a Raspberry Pi 3B. V4L2 captures returned the expected exact frame spans for 1080p60 (120 frames), 720p60 (120), 576p50 (100), 480p59.94 (100), and 640x480p60 (100); all tests reported zero desyncs.
+- Tested the modes in OBS after manually selecting the matching source resolution. OBS does not automatically follow HDMI resolution changes. The 576p50 input synchronized while OBS was configured for 60 fps; accurate V4L2 frame-interval reporting remains follow-up work.
+
 ## [0.1.2] - 2026-11-04
 
 ### Fixed

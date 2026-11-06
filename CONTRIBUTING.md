@@ -92,4 +92,5 @@ If you ever update or trim the initialization sequence:
   - `PACKAGE_VERSION` in `dkms.conf`
   - `pkgver` in `PKGBUILD`
   - `PKG_VER` in `install.sh`
+  - Package source path and supported-format details in `README.md`
   - [`CHANGELOG.md`](CHANGELOG.md)

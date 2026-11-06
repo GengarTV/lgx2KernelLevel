@@ -31,7 +31,7 @@ A: Think of the `2` as **"to"** — **`LGX-to-KernelLevel`** (playing off upstre
 
 | Source Signal Type | Status | Details |
 |---|---|---|
-| **1920×1080p @ 60 Hz / 59.94 Hz / 50 Hz (SDR)** | **Supported & Verified** | Uncompressed `YUYV` 4:2:2 (Rec. 709 limited range) + 48 kHz 16-bit stereo LPCM audio. Bare-metal verified with **Nintendo Switch** (video + audio) and **Raspberry Pi 3B**. |
+| **1920×1080p, 1280×720p, 720×576p, 720×480p, 640×480p (SDR)** | **Supported & Verified** | Uncompressed `YUYV` 4:2:2 (Rec. 709 limited range). Bare-metal verified on Niri with a Raspberry Pi 3B; tested timings included 1080p60, 720p60, 576p50, 480p59.94, and 640×480p60. |
 | **RGB & YCbCr 4:4:4 / 4:2:2 Sources (SDR)** | **Supported** | `ADV7604 IO[0x02]` is automatically set to `0xF` (auto color-space selection from HDMI AVI InfoFrame). |
 | **HDR10 / HLG / Dolby Vision (BT.2020)** | **Unsupported (Hardware Limit)** | The GC550 uses an HDMI 1.4a 8-bit SDR receiver (`ADV7604`). Turn **HDR OFF** on your source console/PC. |
 | **HDCP-Protected HDMI Sources** | **Unsupported (By Design)** | Encrypted HDCP streams (e.g. PS4/PS5 with HDCP enabled, MacBooks) cannot be captured. Disable HDCP in console settings. |
@@ -44,7 +44,7 @@ Instead of requiring a background `libusb` daemon and `v4l2loopback`, `gc550.ko`
 
 - **Native V4L2 Video Capture (`/dev/videoX` & `/dev/avermedia-gc550`)**:
   - Exposes a standard `videobuf2-vmalloc` V4L2 capture node compatible out-of-the-box with **OBS Studio**, **FFmpeg**, **mpv**, and **GStreamer**.
-  - Streams uncompressed `1920x1080 @ 60fps` (`YUYV` / `YUY2` 4:2:2, Rec. 709 limited range).
+  - Exposes uncompressed `YUYV` / `YUY2` 4:2:2 capture at `1920x1080`, `1280x720`, `720x576`, `720x480`, and `640x480` (Rec. 709 limited range). Select the V4L2/OBS source size to match the active HDMI input.
 - **Native ALSA Audio Capture (`hw:GC550Audio,0`)**:
   - Demultiplexes embedded HDMI LPCM stereo audio (`48 kHz`, `16-bit Little-Endian`) directly from USB Bulk Endpoint `0x83 IN` into an ALSA capture card (automatically picked up by PipeWire / PulseAudio).
 - **Complete Hardware Wake-Up & Passthrough Support**:
@@ -89,7 +89,7 @@ Tested on bare-metal CachyOS (`7.3.1-1-cachyos`, Wayland) using a millisecond co
 1. **SDR Only (No HDR):** The internal Analog Devices `ADV7604` (HDMI RX) and `ADV7511` (HDMI TX) are HDMI 1.4a 8-bit chips. They do not support HDMI 2.0a HDR metadata or 10-bit BT.2020 colorimetry.
 2. **USB 3.0 SuperSpeed (5 Gbps) Required:** Uncompressed 1080p60 YUYV video requires ~250 MB/s of USB bandwidth. Connecting the card to a USB 2.0 port or cable (`480M`) will log a warning in `dmesg` and will not stream video.
 3. **Audio Requires Active Video Capture:** Because the GC550 hardware multiplexes HDMI audio packets (`00 FF FF 58`) inside the USB 3.0 video bulk stream (`EP 0x83 IN`), `/dev/videoX` must be actively streaming (e.g. open in OBS) for audio samples to flow into the ALSA capture device.
-4. **Fixed 1920×1080p60 V4L2 Format:** The driver currently exposes a fixed `1920×1080` `YUYV` format (`4,147,200` bytes/frame), matching the preferred EDID mode advertised by the card.
+4. **Manual Resolution Selection and Frame-Rate Reporting:** The driver exposes five discrete `YUYV` sizes, but does not automatically change the V4L2 format when HDMI timing changes. Set the OBS/V4L2 source size to match the input. Frame-interval enumeration currently reports 60 fps for all sizes; a `576p50` input was observed at about 50 fps, so frame-rate reporting needs follow-up work.
 5. **Cold Bootstrap Delay (~3.3 Seconds):** The very first time `/dev/videoX` is opened after plugging in the USB cable, the driver sends 6,576 I2C setup commands over USB (~3.3 seconds). Subsequent opens skip the bootstrap and start instantaneously.
 6. **USB Hot-Unplug (`v0.1.1`):** Device lifetime is retained across open V4L2 and ALSA handles, and stream URBs are stopped before their resources are released. Hot-unplug during active OBS video and audio capture was verified on bare-metal CachyOS with `29,629` frames, `0` desyncs, and no kernel faults. Reopen or reselect the capture devices after reconnecting the USB cable.
 
@@ -124,7 +124,7 @@ cd lgx2KernelLevel
 `./install.sh` automatically detects your Linux distribution and selects the best installation method:
 1. **On Arch Linux / CachyOS / EndeavourOS / Manjaro (Default: `PKGBUILD` + `pacman` + `DKMS`)**:
    - Runs `makepkg -si` using the included [`PKGBUILD`](PKGBUILD) to build and install the native **`avermedia-gc550-dkms`** package.
-   - `pacman` automatically installs `dkms` if missing, tracks ownership of all files (`/usr/src/avermedia-gc550-0.1.2` and `/usr/lib/udev/rules.d/99-avermedia-gc550.rules`), compiles `gc550.ko` via its DKMS hook, and loads the module immediately.
+   - `pacman` automatically installs `dkms` if missing, tracks ownership of all files (`/usr/src/avermedia-gc550-0.1.3` and `/usr/lib/udev/rules.d/99-avermedia-gc550.rules`), compiles `gc550.ko` via its DKMS hook, and loads the module immediately.
 2. **On Other Linux Distributions (Ubuntu, Debian, Fedora, etc. — Default: Direct Kernel Build)**:
    - Compiles `gc550.ko` against `/lib/modules/$(uname -r)/build` (`make modules && make install`), installs the udev rules, and loads the module immediately.
 
@@ -185,7 +185,7 @@ If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for 
 ## Documentation Index & Repository Structure
 
 - **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** — Solutions for missing kernel headers, Clang/GCC errors, Secure Boot, USB 2.0 fallback, HDCP black screens, and OBS audio.
-- **[`TODO.md`](TODO.md)** — Project roadmap and technical plan for multi-resolution (`720p` / `480p` / `576p`) support.
+- **[`TODO.md`](TODO.md)** — Project roadmap, completed multi-resolution test results, and remaining timing-detection work.
 - **[`PROTOCOL.md`](PROTOCOL.md)** — Deep-dive USB 3.0 bulk protocol, BT.1120 SAV/EAV markers, and I2C register documentation (by `@ChrisAJS`).
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — Driver architecture, hardware safety rules (`AT88SC`), VM testing workflow, and register table format.
 - **[`CHANGELOG.md`](CHANGELOG.md)** — Release history and notable changes.
