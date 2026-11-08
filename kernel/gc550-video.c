@@ -278,6 +278,7 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 			size_t avail = len - i;
 			size_t take = min_t(size_t, avail, p->audio_rem);
 
+			p->audio_bytes += take;
 			gc550_audio_push_samples(dev, &data[i], take);
 			i += take;
 			p->audio_rem -= take;
@@ -616,6 +617,7 @@ static int gc550_start_streaming(struct vb2_queue *vq, unsigned int count)
 
 	gc550_parser_reset(&dev->parser);
 	dev->parser.frame_sequence = 0;
+	dev->parser.audio_bytes = 0;
 	if (READ_ONCE(dev->disconnected)) {
 		gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
 		return -ENODEV;
@@ -660,9 +662,9 @@ static void gc550_stop_streaming(struct vb2_queue *vq)
 
 	gc550_stop_stream_resources(dev, VB2_BUF_STATE_ERROR);
 	dev_info(&dev->intf->dev,
-		 "Stream stopped: frames=%llu, desyncs=%u, swap_mode=%d\n",
-		 dev->parser.frame_sequence, dev->parser.desync_count,
-		 dev->parser.swap_mode);
+		 "Stream stopped: frames=%llu, audio_bytes=%llu, desyncs=%u, swap_mode=%d\n",
+		 dev->parser.frame_sequence, dev->parser.audio_bytes,
+		 dev->parser.desync_count, dev->parser.swap_mode);
 }
 
 static const struct vb2_ops gc550_vb2_ops = {

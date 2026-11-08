@@ -115,7 +115,7 @@ static void gc550_disconnect(struct usb_interface *intf)
 	 */
 	mutex_lock(&dev->stream_mutex);
 	spin_lock_irqsave(&dev->stream_lock, flags);
-	dev->disconnected = true;
+	WRITE_ONCE(dev->disconnected, true);
 	dev->streaming = false;
 	spin_unlock_irqrestore(&dev->stream_lock, flags);
 	mutex_unlock(&dev->stream_mutex);

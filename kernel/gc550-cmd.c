@@ -19,6 +19,7 @@
  *   audio normally without touching the CryptoMemory authentication zones.
  */
 
+#include <linux/lockdep.h>
 #include <linux/unaligned.h>
 #include "gc550.h"
 #include "gc550-regtables.h"
@@ -41,10 +42,12 @@ int gc550_cmd_init(struct gc550_dev *dev)
 
 void gc550_cmd_free(struct gc550_dev *dev)
 {
+	mutex_lock(&dev->cmd_lock);
 	kfree(dev->cmd_in_buf);
 	kfree(dev->cmd_out_buf);
 	dev->cmd_in_buf = NULL;
 	dev->cmd_out_buf = NULL;
+	mutex_unlock(&dev->cmd_lock);
 }
 
 /**
@@ -55,11 +58,19 @@ static void gc550_cmd_drain_responses(struct gc550_dev *dev)
 	int actual_len = 0;
 	int i;
 
+	lockdep_assert_held(&dev->cmd_lock);
+	if (READ_ONCE(dev->disconnected) || !dev->cmd_in_buf)
+		return;
+
 	for (i = 0; i < 4; i++) {
-		int ret = usb_bulk_msg(dev->udev,
-				       usb_rcvbulkpipe(dev->udev, GC550_EP_CMD_IN),
-				       dev->cmd_in_buf, GC550_CMD_MAX_PKT_SIZE,
-				       &actual_len, 20);
+		int ret;
+
+		if (READ_ONCE(dev->disconnected))
+			break;
+		ret = usb_bulk_msg(dev->udev,
+				   usb_rcvbulkpipe(dev->udev, GC550_EP_CMD_IN),
+				   dev->cmd_in_buf, GC550_CMD_MAX_PKT_SIZE,
+				   &actual_len, 20);
 		if (ret < 0)
 			break;
 	}
@@ -69,6 +80,10 @@ static int gc550_cmd_send(struct gc550_dev *dev, const u8 *tx_buf, int tx_len)
 {
 	int actual_len = 0;
 	int ret;
+
+	lockdep_assert_held(&dev->cmd_lock);
+	if (READ_ONCE(dev->disconnected) || !dev->cmd_out_buf)
+		return -ENODEV;
 
 	if (tx_len > GC550_CMD_MAX_PKT_SIZE)
 		return -EINVAL;
@@ -103,6 +118,10 @@ static int gc550_cmd_xfer(struct gc550_dev *dev, const u8 *tx_buf, int tx_len,
 {
 	int actual_len = 0;
 	int ret;
+
+	lockdep_assert_held(&dev->cmd_lock);
+	if (READ_ONCE(dev->disconnected) || !dev->cmd_out_buf || !dev->cmd_in_buf)
+		return -ENODEV;
 
 	if (rx_expected <= 0 || rx_expected > GC550_CMD_MAX_PKT_SIZE)
 		return -EINVAL;
@@ -284,6 +303,11 @@ static int gc550_run_init_sequence(struct gc550_dev *dev)
 		u16 rx_len = get_unaligned_le16(&gc550_init_blob[offset + 1]);
 		const u8 *tx_data = &gc550_init_blob[offset + 3];
 
+		if (READ_ONCE(dev->disconnected)) {
+			ret = -ENODEV;
+			break;
+		}
+
 		if (offset + 3 + tx_len > GC550_INIT_BLOB_SIZE) {
 			ret = -EINVAL;
 			break;
@@ -323,6 +347,8 @@ int gc550_bootstrap_hw(struct gc550_dev *dev)
 		return 0;
 
 	ret = gc550_detect_board_state(dev, &already_configured);
+	if (ret == -ENODEV || READ_ONCE(dev->disconnected))
+		return -ENODEV;
 	if (ret < 0) {
 		dev_warn(&dev->intf->dev,
 			 "Could not query board state (%d), proceeding with cold bootstrap\n",
@@ -332,7 +358,9 @@ int gc550_bootstrap_hw(struct gc550_dev *dev)
 	if (already_configured) {
 		dev_info(&dev->intf->dev,
 			 "GC550 already configured; reusing existing hardware state\n");
-		gc550_set_auto_input_colorspace(dev);
+		ret = gc550_set_auto_input_colorspace(dev);
+		if (ret < 0)
+			return ret;
 		dev->is_bootstrapped = true;
 		return 0;
 	}
@@ -345,12 +373,37 @@ int gc550_bootstrap_hw(struct gc550_dev *dev)
 	if (ret < 0)
 		return ret;
 
-	gc550_set_auto_input_colorspace(dev);
+	ret = gc550_set_auto_input_colorspace(dev);
+	if (ret < 0)
+		return ret;
 
 	dev_info(&dev->intf->dev, "GC550 hardware bootstrap complete\n");
 	dev->is_bootstrapped = true;
-	gc550_log_signal_status(dev);
 	return 0;
+}
+
+static const char *gc550_iec60958_rate_name(u8 cs_fs)
+{
+	switch (cs_fs) {
+	case 0x0:
+		return "44100 Hz";
+	case 0x1:
+		return "not indicated";
+	case 0x2:
+		return "48000 Hz";
+	case 0x3:
+		return "32000 Hz";
+	case 0x8:
+		return "88200 Hz";
+	case 0xa:
+		return "96000 Hz";
+	case 0xc:
+		return "176400 Hz";
+	case 0xe:
+		return "192000 Hz";
+	default:
+		return "unknown";
+	}
 }
 
 /**
@@ -359,9 +412,14 @@ int gc550_bootstrap_hw(struct gc550_dev *dev)
 void gc550_log_signal_status(struct gc550_dev *dev)
 {
 	u8 io_0c = 0, io_12 = 0, io_6a = 0, io_6f = 0, cp_b1 = 0;
+	u8 io_65_pre = 0, io_65_post = 0, hdmi_39 = 0;
 	u8 hdmi_05_0c[8] = { 0 };
 	bool cable_5v, tmds_clk, tmds_lock, stdi_valid, pwr_down, hdmi_mode, hdcp_on;
+	bool cs_valid_pre, cs_valid_post;
+	const char *rate_str;
 	u16 width, height;
+	u8 cs_fs;
+	int ret;
 
 	if (gc550_i2c_read_byte(dev, GC550_I2C_ADV7604_IO, 0x6f, &io_6f) < 0)
 		return;
@@ -393,4 +451,54 @@ void gc550_log_signal_status(struct gc550_dev *dev)
 		 hdmi_mode ? "HDMI" : "DVI",
 		 hdcp_on ? "YES" : "NO",
 		 hdmi_05_0c[1]);
+
+	/*
+	 * Read-only ADV7604 audio status diagnostic:
+	 * - IO[0x65] (HDMI_LVL_RAW_STATUS_2): unlatched raw status; bit 7 is
+	 *   CS_DATA_VALID_RAW (no clear-on-read side effect).
+	 * - HDMI[0x39] (CS_DATA[31:24]): IEC 60958-3 Channel Status byte 3;
+	 *   bits 3:0 encode the sampling frequency (read-only).
+	 * Re-reading IO[0x65] after HDMI[0x39] detects whether CS_DATA_VALID_RAW
+	 * changed across the read window, though separate I2C reads do not form
+	 * an atomic hardware snapshot.
+	 */
+	ret = gc550_i2c_read_byte(dev, GC550_I2C_ADV7604_IO, 0x65, &io_65_pre);
+	if (ret < 0) {
+		dev_warn(&dev->intf->dev,
+			 "HDMI Audio Status: failed to read ADV7604 IO[0x65]: %d\n",
+			 ret);
+		return;
+	}
+
+	ret = gc550_i2c_read_byte(dev, GC550_I2C_ADV7604_HDMI, 0x39, &hdmi_39);
+	if (ret < 0) {
+		dev_warn(&dev->intf->dev,
+			 "HDMI Audio Status: failed to read ADV7604 HDMI[0x39]: %d\n",
+			 ret);
+		return;
+	}
+
+	ret = gc550_i2c_read_byte(dev, GC550_I2C_ADV7604_IO, 0x65, &io_65_post);
+	if (ret < 0) {
+		dev_warn(&dev->intf->dev,
+			 "HDMI Audio Status: failed to re-read ADV7604 IO[0x65]: %d\n",
+			 ret);
+		return;
+	}
+
+	cs_valid_pre  = (io_65_pre & BIT(7)) != 0;
+	cs_valid_post = (io_65_post & BIT(7)) != 0;
+	cs_fs         = hdmi_39 & 0x0f;
+
+	if (cs_valid_pre != cs_valid_post)
+		rate_str = "unstable/invalid";
+	else if (!cs_valid_pre)
+		rate_str = "invalid";
+	else
+		rate_str = gc550_iec60958_rate_name(cs_fs);
+
+	dev_info(&dev->intf->dev,
+		 "HDMI Audio Status: IO[0x65]=0x%02x->0x%02x (bit7/cs_valid=%u->%u), HDMI[0x39]=0x%02x (bits3:0/cs_fs=0x%x, rate=%s)\n",
+		 io_65_pre, io_65_post, cs_valid_pre ? 1 : 0,
+		 cs_valid_post ? 1 : 0, hdmi_39, cs_fs, rate_str);
 }
