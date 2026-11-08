@@ -22,31 +22,39 @@ This file tracks planned features, technical design notes, and future experiment
 
 ---
 
-## Planned Feature: Dynamic ALSA Audio Sample Rate (`44.1 kHz` / `48 kHz` / `32 kHz`)
+## Audio Transport & Sample-Rate Investigation (`44.1 kHz` / `48 kHz` / `32 kHz`) — Complete
 
-Currently, [`kernel/gc550-audio.c`](kernel/gc550-audio.c) hardcodes `SNDRV_PCM_RATE_48000`. However, HDMI sources (such as CD players, PS1/PS2/PS3 consoles playing Red Book CD audio, retro scalers, or PCs configured for `44.1 kHz`) can output `44.1 kHz`, `48 kHz`, or `32 kHz` LPCM audio over HDMI.
+Hardware investigation (Phases B2, C1–C3, D1, D2.1, and D2.2.7) concluded. Confirmed that [`kernel/gc550-audio.c`](kernel/gc550-audio.c) correctly implements a fixed `48 kHz` stereo `S16_LE` (`SNDRV_PCM_RATE_48000`) ALSA capture interface. The GC550 hardware delivers a continuous `48 kHz` audio stream over USB bulk EP 0x83 regardless of whether the incoming HDMI audio is `48 kHz` or `44.1 kHz`. Dynamic ALSA sample-rate switching is therefore unnecessary and unsupported by the hardware capture stream. See [`docs/GC550-REVERSE-ENGINEERING.md`](docs/GC550-REVERSE-ENGINEERING.md) (Sections F.4, F.5, F.6, and G) for complete documentation.
 
-### 1. Candidate Hardware Mechanisms (Hypotheses Requiring Verification on GC550)
-> **Note:** Every hardware, register, USB framing, and ALSA behavior point below is an **unverified hypothesis** awaiting verification against [`PROTOCOL.md`](PROTOCOL.md), chip documentation, and live GC550 hardware observations before implementation.
+### 1. Verified Hardware Observations (Phases B2, C1, C2, and C3 on Titan; Analyzed in Phase D1)
+- [x] **ADV7604 Channel-Status Verification (`IO[0x65]` & `HDMI[0x39]`)**:
+  - Verified on Titan (`1080p60` from Raspberry Pi 3B): `ADV7604 IO[0x65]` bit 7 (`CS_DATA_VALID_RAW`) and `HDMI[0x39]` bits `3:0` (`CS_DATA` sampling frequency) reported invalid/idle during no-audio capture (`B2`: `IO[0x65]=0x40`, `HDMI[0x39]=0x00`), valid `48,000 Hz` in `C1` (`IO[0x65]=0x82`, `HDMI[0x39]=0x02`), and valid `44,100 Hz` in `C3` when the Pi hardware ran at `44,100 Hz` with explicit `AES3=0x00` channel-status metadata (`IO[0x65]=0x82`, `HDMI[0x39]=0x00`). (`C2` ran at `44,100 Hz` with incorrect default `AES3=0x02` metadata and is not a valid `44.1 kHz` receiver verification.)
+- [x] **Fixed USB Audio Payload Byte Rate (`~3,200` B/frame / `~192,000` B/s at `1080p60`)**:
+  - Measured `parser.audio_bytes` during Phases B2 and C1–C3 (with the GC550 ALSA PCM device closed; `parser.audio_bytes` counts only the payload bytes declared by the 4-byte big-endian length header after `00 FF FF 58`, excluding the marker, length field, and trailing `AA 55 55 AA` filler):
+    - `B2` (no active HDMI audio, `300` frames): `959,984` bytes
+    - `C1` (`48 kHz`, valid channel status, `3,600` frames): `11,523,052` bytes
+    - `C2` (`44.1 kHz` source, incorrect channel-status metadata, `3,600` frames): `11,523,044` bytes
+    - `C3` (`44.1 kHz`, valid channel status, `3,600` frames): `11,523,036` bytes
+  - Both `C1` (`48 kHz`) and `C3` (`44.1 kHz`) produced practically identical USB audio payload totals (`16` bytes difference over `3,600` frames), and `B2` demonstrated continued `~3,200` B/frame payload generation even without valid HDMI audio.
 
-1. **EDID Audio Capabilities (Hypothesis):**
-   - **Hypothesis to verify:** The `ADV7604` EDID image programmed during GC550 bootstrap may advertise 2-channel LPCM support at `32 kHz`, `44.1 kHz`, and `48 kHz` to connected HDMI sources. Needs verification by inspecting the programmed EDID block in `gc550-regtables.h` / `PROTOCOL.md` and testing what rates HDMI sources actually negotiate.
-2. **Incoming Audio Rate Detection via `ADV7604` HDMI Map `0x34` (Hypothesis):**
-   - **Hypothesis to verify (N / CTS registers):** On standard `ADV7604` devices, HDMI Map (`0x34`) registers `0x5B..0x5F` are candidate registers for HDMI Audio Clock Regeneration (`N` / `CTS`). Whether these registers are populated and readable as expected on the GC550 over the FX3 I2C bridge has not yet been verified on hardware.
-   - **Hypothesis to verify (IEC 60958 Channel Status registers):** Candidate `ADV7604` HDMI Map registers `0x36..0x3A` (specifically `0x39` bits `3:0` with candidate IEC 60958 sample-frequency codes `0x0 = 44.1 kHz`, `0x2 = 48 kHz`, `0x3 = 32 kHz`, `0x8 = 88.2 kHz`, `0xA = 96 kHz`) may report the incoming HDMI audio sample rate. Both the register layout and whether the GC550 exposes valid channel-status bits across sources must be verified before relying on them.
-3. **USB Audio Payload-Size / Sample-Rate Correlation (Hypothesis):**
-   - **Hypothesis to verify:** If the GC550 FPGA / FX3 passes raw HDMI audio samples without hardware resampling, the USB stream's per-frame audio packet length (`[00 FF FF 58] [BE32 len]`) might scale with the input sample rate relative to the video frame rate (for example, at `60 fps`, `48 kHz` stereo S16_LE corresponds to `3,200 bytes/frame` on average, whereas `44.1 kHz` would correspond to `2,940 bytes/frame`). This is unverified: it is not yet known whether payload sizes vary per packet, how non-60 Hz video modes affect packet sizing, or whether the FPGA/codec resamples or repacketizes audio internally.
-4. **HDMI Passthrough Transmitter (`ADV7511` `0x3D`) Requirements (Hypothesis):**
-   - **Observation from [`PROTOCOL.md`](PROTOCOL.md) vs. unverified hypothesis:** Upstream [`PROTOCOL.md`](PROTOCOL.md) notes that the bootstrap sequence writes `0x001880` (`6272`, the nominal HDMI `N` value for `44.1 kHz`) and then `0x001800` (`6144`, the nominal HDMI `N` value for `48 kHz`) to `ADV7511` (`0x3D`) registers `0x01..0x03`.
-   - **Hypothesis to verify:** It was previously hypothesized that `ADV7511` registers `0x01..0x03` must be reprogrammed whenever the input sample rate changes so the HDMI passthrough monitor stays in sync, or even for capture. It has **not** been verified whether `ADV7511` register writes affect USB/ALSA capture at all, or whether passthrough audio requires driver intervention on rate changes.
+### 2. Verified Hardware Capture & Signal Analysis (Phases D2.1 & D2.2.7 on Titan)
+- [x] **Fixed 48 kHz Stereo S16_LE Capture Under Both HDMI Input Conditions**:
+  - Controlled 30-second ALSA captures (`arecord -D hw:3,0 -f S16_LE -c 2 -r 48000`) produced exactly `5,760,000` bytes each (`1,440,000` audio frames) with exit code 0 and zero parser desyncs:
+    - **D2 Condition 1 (`48 kHz` HDMI input, `AES3=0x02`)**: Captured to `/tmp/gc550_d2_48k_raw_retry.pcm` (`5,760,000` bytes).
+    - **D2 Condition 2 (`44.1 kHz` HDMI input, `AES3=0x00`)**: Captured to `/tmp/gc550_d2_44k1_raw.pcm` (`5,760,000` bytes).
+- [x] **ADV7604 Input Rate Reporting Preserved & Verified**:
+  - `gc550_log_signal_status()` correctly read and reported the incoming HDMI rate via `IO[0x65]` and `HDMI[0x39]` (`48000 Hz` in D2 Condition 1, `44100 Hz` in D2 Condition 2) while the ALSA capture interface operated at fixed `48,000 Hz`.
+- [x] **Audio Transport Continuity & Duplicate Characterization**:
+  - **Continuity**: No audio discontinuities or transport repetitions were detected in the analyzed 30-second captures (`0` cycle length anomalies `> 0.5 samples` across all `30,000` sine cycles in both conditions).
+  - **Duplicates**: Duplicate samples occurred exclusively at peak apex turning points (`|s| >= 22,900 LSB`), matching the integer quantization of the scaled continuous sine model (`180/180` matches in D2 Condition 1, `165/165` matches in D2 Condition 2). Zero slope repetitions and zero zero-crossing duplicates were observed.
+- [x] **Observed Upstream Rate Conversion**:
+  - The GC550 capture pipeline delivers a continuous `48 kHz` stereo `S16_LE` stream when fed a `44.1 kHz` HDMI source. The driver performs no host-side resampling and passes demultiplexed payload bytes directly to ALSA ring buffers. Rate conversion upstream of the host ALSA interface is empirically supported by the preserved recordings, while the exact internal silicon component and conversion location (ADV7604 internal processing, an on-board DSP, or Cypress FX3 firmware) remain unknown.
+- [x] **Separation of Observations from Unproven Hypotheses**:
+  - In D2 Condition 1, continuous sine-model residual is `5.460 LSB RMS` with residual spectral peaks at `996.00`, `998.40`, and `1003.20 Hz` (`~2.95 LSB`, `-77.82 dBc`). In D2 Condition 2, continuous residual is `0.511 LSB RMS` with residual peaks suppressed to `0.08 LSB` (`-109.18 dBc`).
+  - Hypotheses attributing D2 Condition 1 residual spectral peaks to ADV7604 HDMI ACR PLL tracking jitter or D2 Condition 2 residual suppression to rate-converter FIFO decoupling are **unproven**.
+- [x] **Driver Architecture Decision**:
+  - Because the hardware capture stream is consistently `48 kHz` stereo `S16_LE` across both `48 kHz` and `44.1 kHz` HDMI inputs, dynamic ALSA rate switching logic is unnecessary and unsupported by the hardware stream. Fixed `48 kHz` ALSA capture in [`kernel/gc550-audio.c`](kernel/gc550-audio.c) is the permanent hardware abstraction.
 
-### 2. Candidate Investigation & Design Steps (Pending Hardware Verification)
-- **Step 1 — Investigate Active HDMI Audio Rate Detection (`gc550-cmd.c`):**
-  - Test on GC550 hardware whether candidate `ADV7604` registers (`HDMI 0x36..0x3A` / `0x39` channel-status bits and `HDMI 0x5B..0x5F` `N`/`CTS` values) or USB `00 FF FF 58` payload lengths reliably distinguish `32000`, `44100`, and `48000` Hz across supported video modes.
-- **Step 2 — Determine Whether `ADV7511` Passthrough `N` Register Updates Are Required:**
-  - Verify whether `ADV7511` (`0x3D`) registers `0x01..0x03` (`6272` for `44.1 kHz`, `6144` for `48 kHz`, `4096` for `32 kHz`) have any effect on USB audio capture or if they are strictly for HDMI passthrough, and avoid unnecessary I2C writes if not needed.
-- **Step 3 — Design ALSA Rate Negotiation & Active-Stream Rate-Change Handling (`gc550-audio.c`):**
-  - If hardware rate detection is confirmed reliable, evaluate advertising `SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000` (`rate_min = 32000`, `rate_max = 48000`), constraining `runtime->hw` in `gc550_pcm_open()` to the detected rate, and determining the safest mechanism (such as `snd_pcm_stop_xrun(substream)` or equivalent) if the HDMI source changes sample rate during an active stream so applications do not play pitch-shifted audio.
 
 ---
 
