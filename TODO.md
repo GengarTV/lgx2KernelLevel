@@ -9,7 +9,7 @@ This file tracks planned features, technical design notes, and future experiment
 - [x] Field-test bare-metal performance, frame pacing (`60.02 fps`, `0` desyncs), and audio sync on a secondary physical Linux machine (laptop) (When I can find my god damn extra USB 3.0 A to Micro-B SuperSpeed cable! I REALLY don't want to untangle my cable management from my primary production rig — *Update: Cable found! Verified on `niri` laptop with Raspberry Pi 3B & Nintendo Switch: `776,295` continuous 1080p60 frames with `0` desyncs + `48 kHz` stereo ALSA audio!*).
 - [x] **Fix USB Hot-Unplug Use-After-Free While Streaming (`struct kref` + `v4l2_dev.release`)**:
   - **Issue Discovered on `niri` (`2026-11-03`)**: Hot-unplugging the USB 3.0 cable while `mpv` had `/dev/video2` actively open and streaming triggered a `NULL pointer dereference` (`RIP: v4l2_ioctl+0x24/0x60`) in `mpv`'s `demux` thread (`PID 36588`), leaving `/dev/video2` zombie-locked and registering `/dev/video3` on replug.
-  - **Root Cause**: [`gc550_disconnect()`](kernel/gc550-core.c) currently calls `kfree(dev)` immediately after `gc550_video_unregister(dev)` while userspace file descriptors (`/dev/videoX`, `/dev/snd/pcmC*`) are still open and mid-`ioctl`.
+  - **Historical Root Cause (`v0.1.0`)**: In `v0.1.0`, [`gc550_disconnect()`](kernel/gc550-core.c) called `kfree(dev)` immediately after `gc550_video_unregister(dev)` while userspace file descriptors (`/dev/videoX`, `/dev/snd/pcmC*`) were still open and mid-`ioctl`.
   - **Implemented and verified in `v0.1.1` on niri:** Device kref release is deferred through V4L2 and ALSA lifetimes; disconnect closes the URB submission gate, drains URBs and in-flight ALSA callbacks, and makes VB2 stop cleanup idempotent.
   - **Unplug test:** OBS was capturing video and audio. Disconnect completed after `29,629` frames with `0` desyncs and no kernel faults; replug registered the device and completed a cold bootstrap.
 - [ ] Field-test on primary production gaming rig.
@@ -26,25 +26,27 @@ This file tracks planned features, technical design notes, and future experiment
 
 Currently, [`kernel/gc550-audio.c`](kernel/gc550-audio.c) hardcodes `SNDRV_PCM_RATE_48000`. However, HDMI sources (such as CD players, PS1/PS2/PS3 consoles playing Red Book CD audio, retro scalers, or PCs configured for `44.1 kHz`) can output `44.1 kHz`, `48 kHz`, or `32 kHz` LPCM audio over HDMI.
 
-### 1. Hardware Evidence (`ADV7604` RX + `ADV7511` TX)
-1. **EDID Audio Capabilities:**
-   - The `ADV7604` EDID advertises 2-channel LPCM at `32 kHz`, `44.1 kHz`, and `48 kHz`.
-2. **Incoming Audio Rate Detection (`ADV7604` HDMI Map `0x34`):**
-   - The `ADV7604` extracts the HDMI Audio Clock Regeneration (`N` / `CTS` in `HDMI 0x5B..0x5F`) and IEC 60958 Channel Status bits (`HDMI 0x36..0x3A`, where `0x39` bits `3:0` encode the exact sample frequency: `0x0 = 44.1 kHz`, `0x2 = 48 kHz`, `0x3 = 32 kHz`, `0x8 = 88.2 kHz`, `0xA = 96 kHz`).
-   - Additionally, the USB stream's per-frame audio payload length (`[00 FF FF 58] [BE32 len]`) directly reflects the sample rate relative to frame rate (e.g., at `60 fps`: `3,200 bytes` = `48 kHz`, `2,940 bytes` = `44.1 kHz`).
-3. **HDMI Passthrough Transmitter (`ADV7511` `0x3D`):**
-   - As noted in [`PROTOCOL.md`](PROTOCOL.md), the bootstrap programs the `ADV7511` Audio Clock Regeneration `N` register (`0x01..0x03`) with `0x001880` (`6272`, the HDMI standard `N` for `44.1 kHz`) and then `0x001800` (`6144`, the HDMI standard `N` for `48 kHz`).
-   - When the input sample rate changes, `ADV7511` registers `0x01..0x03` must also be updated so the HDMI passthrough monitor doesn't lose audio sync.
+### 1. Candidate Hardware Mechanisms (Hypotheses Requiring Verification on GC550)
+> **Note:** Every hardware, register, USB framing, and ALSA behavior point below is an **unverified hypothesis** awaiting verification against [`PROTOCOL.md`](PROTOCOL.md), chip documentation, and live GC550 hardware observations before implementation.
 
-### 2. Implementation Steps (Post Field-Testing)
-- **Step 1 — Read Active HDMI Audio Rate in `gc550-cmd.c`:**
-  - Read `ADV7604` `HDMI 0x39` (IEC 60958 Channel Status sample rate bits) and `HDMI 0x5B..0x5D` (`N` value) during `gc550_log_signal_status()` (and periodic status polling), storing `dev->audio_rate` (`32000`, `44100`, or `48000`, defaulting to `48000` when unlocked).
-- **Step 2 — Update `ADV7511` Passthrough `N` Register on Rate Change:**
-  - When `dev->audio_rate` changes between `44.1 kHz`, `48 kHz`, and `32 kHz`, write the matching 20-bit `N` value (`6272` for `44.1 kHz`, `6144` for `48 kHz`, `4096` for `32 kHz`) to `ADV7511` (`0x3D`) registers `0x01..0x03`.
-- **Step 3 — Dynamic ALSA Rate Constraints in `gc550-audio.c`:**
-  - Expand `gc550_pcm_hw.rates` to `SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000` (`rate_min = 32000`, `rate_max = 48000`).
-  - In `gc550_pcm_open()`, constrain `runtime->hw.rate_min = runtime->hw.rate_max = dev->audio_rate` (and `runtime->hw.rates = snd_pcm_rate_to_rate_bit(dev->audio_rate)`) so PipeWire / PulseAudio / OBS automatically negotiates the exact sample rate of the connected HDMI source.
-  - If the HDMI source changes audio sample rate while an ALSA stream is already running, call `snd_pcm_stop_xrun(substream)` so PipeWire/OBS cleanly re-opens and re-negotiates the new sample rate instead of playing pitch-shifted audio (the "chipmunk" or "slow-mo" effect).
+1. **EDID Audio Capabilities (Hypothesis):**
+   - **Hypothesis to verify:** The `ADV7604` EDID image programmed during GC550 bootstrap may advertise 2-channel LPCM support at `32 kHz`, `44.1 kHz`, and `48 kHz` to connected HDMI sources. Needs verification by inspecting the programmed EDID block in `gc550-regtables.h` / `PROTOCOL.md` and testing what rates HDMI sources actually negotiate.
+2. **Incoming Audio Rate Detection via `ADV7604` HDMI Map `0x34` (Hypothesis):**
+   - **Hypothesis to verify (N / CTS registers):** On standard `ADV7604` devices, HDMI Map (`0x34`) registers `0x5B..0x5F` are candidate registers for HDMI Audio Clock Regeneration (`N` / `CTS`). Whether these registers are populated and readable as expected on the GC550 over the FX3 I2C bridge has not yet been verified on hardware.
+   - **Hypothesis to verify (IEC 60958 Channel Status registers):** Candidate `ADV7604` HDMI Map registers `0x36..0x3A` (specifically `0x39` bits `3:0` with candidate IEC 60958 sample-frequency codes `0x0 = 44.1 kHz`, `0x2 = 48 kHz`, `0x3 = 32 kHz`, `0x8 = 88.2 kHz`, `0xA = 96 kHz`) may report the incoming HDMI audio sample rate. Both the register layout and whether the GC550 exposes valid channel-status bits across sources must be verified before relying on them.
+3. **USB Audio Payload-Size / Sample-Rate Correlation (Hypothesis):**
+   - **Hypothesis to verify:** If the GC550 FPGA / FX3 passes raw HDMI audio samples without hardware resampling, the USB stream's per-frame audio packet length (`[00 FF FF 58] [BE32 len]`) might scale with the input sample rate relative to the video frame rate (for example, at `60 fps`, `48 kHz` stereo S16_LE corresponds to `3,200 bytes/frame` on average, whereas `44.1 kHz` would correspond to `2,940 bytes/frame`). This is unverified: it is not yet known whether payload sizes vary per packet, how non-60 Hz video modes affect packet sizing, or whether the FPGA/codec resamples or repacketizes audio internally.
+4. **HDMI Passthrough Transmitter (`ADV7511` `0x3D`) Requirements (Hypothesis):**
+   - **Observation from [`PROTOCOL.md`](PROTOCOL.md) vs. unverified hypothesis:** Upstream [`PROTOCOL.md`](PROTOCOL.md) notes that the bootstrap sequence writes `0x001880` (`6272`, the nominal HDMI `N` value for `44.1 kHz`) and then `0x001800` (`6144`, the nominal HDMI `N` value for `48 kHz`) to `ADV7511` (`0x3D`) registers `0x01..0x03`.
+   - **Hypothesis to verify:** It was previously hypothesized that `ADV7511` registers `0x01..0x03` must be reprogrammed whenever the input sample rate changes so the HDMI passthrough monitor stays in sync, or even for capture. It has **not** been verified whether `ADV7511` register writes affect USB/ALSA capture at all, or whether passthrough audio requires driver intervention on rate changes.
+
+### 2. Candidate Investigation & Design Steps (Pending Hardware Verification)
+- **Step 1 — Investigate Active HDMI Audio Rate Detection (`gc550-cmd.c`):**
+  - Test on GC550 hardware whether candidate `ADV7604` registers (`HDMI 0x36..0x3A` / `0x39` channel-status bits and `HDMI 0x5B..0x5F` `N`/`CTS` values) or USB `00 FF FF 58` payload lengths reliably distinguish `32000`, `44100`, and `48000` Hz across supported video modes.
+- **Step 2 — Determine Whether `ADV7511` Passthrough `N` Register Updates Are Required:**
+  - Verify whether `ADV7511` (`0x3D`) registers `0x01..0x03` (`6272` for `44.1 kHz`, `6144` for `48 kHz`, `4096` for `32 kHz`) have any effect on USB audio capture or if they are strictly for HDMI passthrough, and avoid unnecessary I2C writes if not needed.
+- **Step 3 — Design ALSA Rate Negotiation & Active-Stream Rate-Change Handling (`gc550-audio.c`):**
+  - If hardware rate detection is confirmed reliable, evaluate advertising `SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000` (`rate_min = 32000`, `rate_max = 48000`), constraining `runtime->hw` in `gc550_pcm_open()` to the detected rate, and determining the safest mechanism (such as `snd_pcm_stop_xrun(substream)` or equivalent) if the HDMI source changes sample rate during an active stream so applications do not play pitch-shifted audio.
 
 ---
 
@@ -81,7 +83,7 @@ Target subsystem: **Linux Media Subsystem (`linux-media@vger.kernel.org`)**, mai
 - [ ] **1. License Coordination (`GPL-3.0` → `GPL-2.0-or-later`)**:
   - The mainline Linux kernel requires `GPL-2.0` compatibility. Coordinate with upstream author **Chris Sawczuk ([@ChrisAJS](https://github.com/ChrisAJS))** to dual-license/re-license the reverse-engineered GC550 hardware initialization tables under `GPL-2.0-or-later` and invite him to co-sign (`Signed-off-by` / `Co-developed-by`) the upstream patch series.
 - [ ] **2. Pass `v4l2-compliance -s` with Zero Failures**:
-  - Run `v4l2-compliance -s -d /dev/avermedia-gc550` (from `v4l-utils`) after implementing the `struct kref` / `v4l2_dev.release` disconnect fix and resolve any flagged V4L2 ioctl edge cases.
+  - Run `v4l2-compliance -s -d /dev/avermedia-gc550` (from `v4l-utils`) against the current driver (with the `v0.1.1` `struct kref` / `v4l2_dev.release` lifecycle fix in place) and resolve any flagged V4L2 ioctl edge cases (including frame-interval reporting and timing-change behavior).
 - [ ] **3. Trim Redundant Polling Loops from `gc550-regtables.h`**:
   - As documented in [`PROTOCOL.md`](PROTOCOL.md), only the first ~1,730 steps of the 6,576-command capture are actual chip initialization; the remaining ~4,800 steps are repeated status-poll reads from the Windows USB capture. Trimming the redundant polling reads will reduce [`kernel/gc550-regtables.h`](kernel/gc550-regtables.h) by ~75% and cut cold bootstrap time from `~3.3 s` to **`< 0.9 s`**.
 - [ ] **4. Pass `scripts/checkpatch.pl --strict`**:

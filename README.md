@@ -22,7 +22,7 @@ A: Think of the `2` as **"to"** — **`LGX-to-KernelLevel`** (playing off upstre
 
 | Device Model | USB ID (`VID:PID`) | Driver Status | Notes |
 |---|---|---|---|
-| **AVerMedia Live Gamer Extreme (GC550 / LGX)** | `07ca:4710` | **Supported & Bare-Metal Verified** | Primary GC550 hardware revision (`bcdDevice 2.07`). Verified on bare-metal CachyOS (`7.3.1-cachyos` Clang & `6.18.55-lts` GCC) for 3.6+ hours continuous `1080p60` (`776,295` frames, `0` desyncs) + `48 kHz` ALSA audio. |
+| **AVerMedia Live Gamer Extreme (GC550 / LGX)** | `07ca:4710` | **Supported & Bare-Metal Verified** | Primary GC550 hardware revision (`bcdDevice 2.07`). Runtime-verified on the Niri test laptop (CachyOS `7.3.1-1-cachyos` Clang) for 3.6+ hours continuous `1080p60` (`776,295` frames, `0` desyncs) + `48 kHz` ALSA audio; DKMS build also verified against `6.18.55-2-cachyos-lts` (GCC). |
 | **AVerMedia Live Gamer Extreme (GC550 / LGX)** | `07ca:0550` | **Supported (Alias Included)** | Alternate USB Product ID documented for GC550 hardware. Uses identical USB endpoints and I2C map. |
 | **AVerMedia Live Gamer Extreme 2 (GC551 / LGX2)** | `07ca:0551` | **Not Supported in `gc550.ko`** | Uses an ITE IT6664 HDMI 2.0 4K front-end splitter (`0x2C`/`0x58`). Use upstream [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) for GC551. |
 | **AVerMedia Live Gamer Ultra (GC553)** | `07ca:0553` | **N/A (Standard UVC)** | Works out-of-the-box with the mainline Linux `uvcvideo` driver. |
@@ -31,7 +31,7 @@ A: Think of the `2` as **"to"** — **`LGX-to-KernelLevel`** (playing off upstre
 
 | Source Signal Type | Status | Details |
 |---|---|---|
-| **1920×1080p, 1280×720p, 720×576p, 720×480p, 640×480p (SDR)** | **Supported & Verified** | Uncompressed `YUYV` 4:2:2 (Rec. 709 limited range). Bare-metal verified on Niri with a Raspberry Pi 3B; tested timings included 1080p60, 720p60, 576p50, 480p59.94, and 640×480p60. |
+| **1920×1080p, 1280×720p, 720×576p, 720×480p, 640×480p (SDR)** | **Supported & Verified** | Uncompressed `YUYV` 4:2:2 (Rec. 709 limited range). Short functional captures (100–120 frames per mode + manual OBS format matching) verified on Niri (`7.3.1-1-cachyos`) with a Raspberry Pi 3B across 1080p60, 720p60, 576p50, 480p59.94, and 640×480p60; long-duration (3.6+ hr) endurance testing has only been performed at 1080p60 on Niri. |
 | **RGB & YCbCr 4:4:4 / 4:2:2 Sources (SDR)** | **Supported** | `ADV7604 IO[0x02]` is automatically set to `0xF` (auto color-space selection from HDMI AVI InfoFrame). |
 | **HDR10 / HLG / Dolby Vision (BT.2020)** | **Unsupported (Hardware Limit)** | The GC550 uses an HDMI 1.4a 8-bit SDR receiver (`ADV7604`). Turn **HDR OFF** on your source console/PC. |
 | **HDCP-Protected HDMI Sources** | **Unsupported (By Design)** | Encrypted HDCP streams (e.g. PS4/PS5 with HDCP enabled, MacBooks) cannot be captured. Disable HDCP in console settings. |
@@ -50,7 +50,7 @@ Instead of requiring a background `libusb` daemon and `v4l2loopback`, `gc550.ko`
 - **Complete Hardware Wake-Up & Passthrough Support**:
   - Programs the internal **ADV7604** HDMI receiver (including 1080p60 EDID RAM), **ADV7511** HDMI passthrough transmitter, **TLV320AIC3x** analog audio codec, **Lattice ECP3** FPGA, and **PCA9539A** GPIO expander over the FX3 USB-to-I2C bridge (`EP 0x01 OUT` / `EP 0x81 IN`).
   - Automatically configures the ADV7604 input colour space (`IO 0x02`) to match RGB or YCbCr HDMI sources and resets picture brightness/contrast adjustments to neutral.
-  - **AT88SC CryptoMemory Protection**: Completely omits and blocks proprietary anti-clone authentication replays (`opcodes 0x05..0x07`), ensuring hardware attempt counters remain untouched (`0xFF`).
+  - **AT88SC CryptoMemory Protection**: Completely omits proprietary anti-clone authentication replays from the initialization table and enforces a runtime filter (`-EPERM`) in `gc550_cmd_send()` (`kernel/gc550-cmd.c`) blocking bridge opcodes `0x05..0x07` and `0x09` so hardware attempt counters remain untouched (`0xFF`).
 - **Stream Resilience**:
   - **Cross-URB Marker Straddle Reassembly**: Tracks partial `[00 FF FF]` SAV/EAV/Audio markers across USB transfer boundaries so frames never drop or misalign.
   - **16 KiB FX3 DMA Swap Reorderer**: Automatically detects and un-swaps 16 KiB ping-pong DMA buffers if the FX3 flips buffer phase on warm restarts.
@@ -61,14 +61,15 @@ Instead of requiring a background `libusb` daemon and `v4l2loopback`, `gc550.ko`
 
 While upstream [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) provides a great cross-platform SDL3/`libusb` application, moving the GC550 stream parser into a Linux kernel driver (`gc550.ko`) provides measurable latency, memory-bandwidth, and integration benefits when capturing into V4L2/PipeWire applications like **OBS Studio**:
 
-### 1. Measured Glass-to-Glass Latency: `50 ms` (3 Frames @ 60 Hz)
-Tested on bare-metal CachyOS (`7.3.1-1-cachyos`, Wayland) using a millisecond count-up timer comparing the GC550's `HDMI OUT` passthrough on a TV (`50.283 s`) against a live `mpv` V4L2 preview window (`50.233 s`):
-- **Total Glass-to-Glass Delta:** **`50 ms`** (`3 × 16.67 ms` frames at 60 fps):
+### 1. Glass-to-Glass Latency Target (`<= 50 ms`) & Historical Niri Measurement (`50 ms` / 3 Frames @ 60 Hz)
+The project target is **no more than `50 ms` end-to-end glass-to-glass latency** (and lower where possible without sacrificing stability). In a point-in-time test on the **Niri** test laptop (CachyOS `7.3.1-1-cachyos`, KWin/Wayland) using a millisecond count-up timer comparing the GC550's `HDMI OUT` passthrough on a TV (`50.283 s`) against a live `mpv` V4L2 preview window flushed to the live edge (`50.233 s`):
+- **Observed Glass-to-Glass Delta on Niri:** **`50 ms`** (`3 × 16.67 ms` frames at 60 fps; single-configuration observation on Niri, not a guaranteed universal maximum).
+- **Analytical Three-Frame Pipeline Breakdown (Estimated, Not Independently Measured Per Stage):**
   1. **Frame 1 (`~16.7 ms` — Hardware Scanout + USB 3.0 DMA):** The GC550 scans out 1080 lines of HDMI video (`4.14 MB`) over USB 3.0 Bulk `EP 0x83 IN` until the `EAV` marker triggers `vb2_buffer_done()` in `gc550.ko`.
   2. **Frame 2 (`~16.7 ms` — GPU Shader & Wayland Compositor):** `mpv` uploads the `YUYV` frame, converts `YUYV → RGB` on the GPU, and submits the surface to KWin/Wayland.
   3. **Frame 3 (`~16.7 ms` — Laptop Display VSync & Panel Scanout):** KWin flips on the next 60 Hz VSync and the laptop LCD scans out the frame.
-- **Raw Driver Capture Latency:** **`~16–20 ms` (1 frame)**, matching AVerMedia's official Windows Ultra-Low-Latency specification.
-- **Endurance Verification:** Tested over **3.6+ hours continuous `1080p60` streaming** (`776,295` frames captured with **`0` frame desyncs** and **`0` ALSA audio XRUNs**).
+- **Analytical Driver Capture Latency Estimate:** **`~16–20 ms` (~1 frame at 60 Hz)**, an analytical estimate based on the `16.67 ms` 60 Hz frame scanout plus the `~1.5–2.5 ms` `512 KiB` URB completion interval (not an independently measured value).
+- **Historical Niri Endurance Verification (`v0.1.0`):** Runtime-tested on **Niri** (`7.3.1-1-cachyos` Clang) over **3.6+ hours continuous `1080p60` streaming** (`776,295` frames captured with **`0` frame desyncs** and **`0` ALSA audio XRUNs**).
 
 ### 2. Kernel (`gc550.ko`) vs. Userspace (`libusb` + `v4l2loopback`) Pipeline Comparison
 
@@ -91,7 +92,7 @@ Tested on bare-metal CachyOS (`7.3.1-1-cachyos`, Wayland) using a millisecond co
 3. **Audio Requires Active Video Capture:** Because the GC550 hardware multiplexes HDMI audio packets (`00 FF FF 58`) inside the USB 3.0 video bulk stream (`EP 0x83 IN`), `/dev/videoX` must be actively streaming (e.g. open in OBS) for audio samples to flow into the ALSA capture device.
 4. **Manual Resolution Selection and Frame-Rate Reporting:** The driver exposes five discrete `YUYV` sizes, but does not automatically change the V4L2 format when HDMI timing changes. Set the OBS/V4L2 source size to match the input. Frame-interval enumeration currently reports 60 fps for all sizes; a `576p50` input was observed at about 50 fps, so frame-rate reporting needs follow-up work.
 5. **Cold Bootstrap Delay (~3.3 Seconds):** The very first time `/dev/videoX` is opened after plugging in the USB cable, the driver sends 6,576 I2C setup commands over USB (~3.3 seconds). Subsequent opens skip the bootstrap and start instantaneously.
-6. **USB Hot-Unplug (`v0.1.1`):** Device lifetime is retained across open V4L2 and ALSA handles, and stream URBs are stopped before their resources are released. Hot-unplug during active OBS video and audio capture was verified on bare-metal CachyOS with `29,629` frames, `0` desyncs, and no kernel faults. Reopen or reselect the capture devices after reconnecting the USB cable.
+6. **USB Hot-Unplug (`v0.1.1`):** Device lifetime is retained across open V4L2 and ALSA handles, and stream URBs are stopped before their resources are released. Hot-unplug during active OBS video and audio capture was verified on Niri (bare-metal CachyOS `7.3.1-1-cachyos`) with `29,629` frames (`v0.1.1`) and `17,227` frames (`v0.1.2`), `0` desyncs, and no kernel faults. Reopen or reselect the capture devices after reconnecting the USB cable.
 
 ---
 

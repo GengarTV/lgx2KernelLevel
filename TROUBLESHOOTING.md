@@ -130,7 +130,7 @@ If you only want HDMI capture audio, disable **Desktop Audio** and any laptop mi
 ### No Audio When Previewing with `mpv`
 Because Linux separates V4L2 video (`/dev/avermedia-gc550`) and ALSA audio (`hw:GC550Audio,0`), running `mpv av://v4l2:/dev/avermedia-gc550` only opens the video stream. Furthermore, passing `--audio-file=av://alsa:hw:GC550Audio,0` directly to `mpv` can stall audio playback because V4L2 timestamps use `CLOCK_MONOTONIC` (system uptime) while FFmpeg's `alsa` demuxer uses `CLOCK_REALTIME` (Unix epoch).
 
-**Fix (Ultra-Low-Latency ~50ms `mpv` + PipeWire Audio Preview):**
+**Fix (Low-Latency `mpv` + PipeWire Audio Preview; measured at ~50 ms on Niri):**
 Run `mpv` with zero read-ahead probing (or press `Right Arrow` in `mpv` to flush startup frames to the live edge) and bridge the ALSA capture device directly into PipeWire:
 ```bash
 mpv av://v4l2:/dev/avermedia-gc550 --profile=low-latency --demuxer-lavf-analyzeduration=0 --demuxer-readahead-secs=0 &

@@ -73,5 +73,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Added distro-aware `install.sh` (`--arch`, `--dkms`, `--direct`, `--uninstall`) and `99-avermedia-gc550.rules`.
   - Added `TROUBLESHOOTING.md`, `CONTRIBUTING.md`, `TODO.md`, and `CHANGELOG.md`.
 - **Hardware & Endurance Verification**:
-  - Verified on bare-metal CachyOS Linux (`7.3.1-1-cachyos` Clang + `6.18.55-2-cachyos-lts` GCC) over USB 3.0 SuperSpeed (`5000M`).
-  - Verified 3.6+ hours continuous `1080p60` streaming (`776,295` frames captured with `0` desyncs), HDMI hot-plugging, and `48 kHz` stereo ALSA audio capture with **Nintendo Switch** and **Raspberry Pi 3B** HDMI sources.
+  - Runtime-verified on the Niri test laptop running bare-metal CachyOS Linux (`7.3.1-1-cachyos` Clang) over USB 3.0 SuperSpeed (`5000M`); DKMS build also verified against `6.18.55-2-cachyos-lts` (GCC).
+  - Verified 3.6+ hours continuous `1080p60` streaming (`776,295` frames captured with `0` desyncs), HDMI hot-plugging, and `48 kHz` stereo ALSA audio capture on Niri with **Nintendo Switch** and **Raspberry Pi 3B** HDMI sources.

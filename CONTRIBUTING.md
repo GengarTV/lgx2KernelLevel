@@ -63,8 +63,13 @@ Because a bug in a kernel USB/V4L2 driver can cause a kernel panic or soft locku
    sudo modprobe videodev videobuf2-common videobuf2-v4l2 videobuf2-vmalloc snd-pcm
    sudo rmmod gc550 2>/dev/null || true
    sudo insmod ./gc550.ko
-   v4l2-ctl --all -d /dev/video0
-   v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=60
+   v4l2-ctl --list-devices
+   # Use /dev/avermedia-gc550 when the udev rule is installed; otherwise set DEV to
+   # the actual /dev/videoX node listed under "AVerMedia GC550" by v4l2-ctl --list-devices
+   # (do not assume /dev/video0 belongs to the GC550):
+   DEV=/dev/avermedia-gc550 # or DEV=/dev/videoX from v4l2-ctl --list-devices
+   v4l2-ctl --all -d "$DEV"
+   v4l2-ctl -d "$DEV" --stream-mmap --stream-count=60
    sudo dmesg | grep -i gc550
    ```
 
