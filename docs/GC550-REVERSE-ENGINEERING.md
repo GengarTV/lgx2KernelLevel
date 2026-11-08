@@ -82,7 +82,7 @@ The GC550 is an uncompressed USB 3.0 video/audio capture device built around an 
 | Component / Bus Target | Bus / Access Path | Role in GC550 | Windows Driver RTTI / Source Evidence | Evidence Level |
 |---|---|---|---|---|
 | **Cypress EZ-USB FX3** | USB 3.0 Device Controller (ARM9 + GPIF II) | Bridges USB Bulk endpoints to internal I2C/2-wire buses (`EP 0x01`/`0x81`) and streams high-speed GPIF II DMA data from the FPGA over `EP 0x83 IN`. | [`PROTOCOL.md`](../PROTOCOL.md) (`16 KiB` FX3 DMA buffer pair footprint); `GC550_FX3_DMA_BUF_SIZE` in [`kernel/gc550.h`](../kernel/gc550.h) | `Confirmed` |
-| **Lattice ECP3 FPGA** | I2C `0x10` (`GC550_I2C_FPGA`) + parallel video/audio bus | Multiplexes raw YUYV 4:2:2 video frames and PCM audio chunks with `00 FF FF` markers (`SAV`, `EAV`, `AUDIO`) and feeds FX3 GPIF II FIFO. | `CLFE3::*` RTTI (`"FPGA version = 0x%02X"` in [`PROTOCOL.md`](../PROTOCOL.md)); `18` writes and `6` reads to `0x10` in `gc550_init_blob` | `Strongly supported` |
+| **Lattice ECP3 FPGA** | I2C `0x10` (`GC550_I2C_FPGA`) + parallel video/audio bus | Multiplexes raw YUYV 4:2:2 video frames and audio payload blocks with `00 FF FF` markers (`SAV`, `EAV`, `AUDIO`) and feeds FX3 GPIF II FIFO. | `CLFE3::*` RTTI (`"FPGA version = 0x%02X"` in [`PROTOCOL.md`](../PROTOCOL.md)); `18` writes and `6` reads to `0x10` in `gc550_init_blob` | `Strongly supported` |
 | **Analog Devices ADV7604** | I2C `0x20` (IO), `0x22` (CP), `0x26` (AFE), `0x32` (REP), `0x34` (HDMI), `0x36` (EDID), `0x46` (InfoFrame) | 4-input HDMI + analog component video/audio receiver. Extracts TMDS video, decodes HDMI audio and InfoFrames, hosts internal 256-byte EDID RAM. | `CRXADV7604::*` (118 methods incl. `ADIAPI_*`/`HAL_*` in [`PROTOCOL.md`](../PROTOCOL.md)); sub-map programming in `IO[0xF3..0xFE]` | `Confirmed` |
 | **Analog Devices ADV7511** | I2C `0x3D` (`GC550_I2C_ADV7511_TX`), `0x38` (packet memory) | HDMI transmitter driving the GC550's HDMI passthrough output port. | `493` writes and `685` reads to `0x3D` plus `1` 31-byte write to `0x38` (`reg 0xC0`) in `gc550_init_blob`; matches `adv7511_fixed_registers` in [`PROTOCOL.md`](../PROTOCOL.md) | `Strongly supported` |
 | **TI TLV320AIC3x** | I2C `0x18` (`GC550_I2C_TLV320AIC3X`) | Stereo analog audio codec for the 3.5 mm analog audio ports on the GC550. | `16` writes to `0x18` (`steps 52..67` in `gc550_init_blob`: PLL `0x03=0x91, 0x04=0x10`, serial interface `0x08=0xC0, 0x09=0x30`, ADC/line-in routing `0x0F..0x18`) | `Strongly supported` |
@@ -243,7 +243,7 @@ All framing markers on `EP 0x83 IN` begin with the 3-byte prefix `00 FF FF` foll
 |---|---|---|---|---|---|
 | `00 FF FF C0` | `0xC0` | `GC550_MARKER_SAV` | **Start of Active Video (SAV)** — Opens a raw YUYV video frame. | `4` bytes (`b0, b1, b2, b3`) | `Confirmed` |
 | `00 FF FF C1` | `0xC1` | `GC550_MARKER_EAV` | **End of Active Video (EAV)** — Closes the current raw YUYV video frame. | `5` bytes (`c0, c1, c2, c3, c4`) | `Confirmed` |
-| `00 FF FF 58` | `0x58` (`'X'`) | `GC550_MARKER_AUDIO` | **Audio Packet** — Opens a length-prefixed PCM audio packet. | `4` bytes (`L3, L2, L1, L0`, big-endian `u32`) | `Confirmed` |
+| `00 FF FF 58` | `0x58` (`'X'`) | `GC550_MARKER_AUDIO` | **Audio Packet** — Opens a length-prefixed audio payload packet (sample format and sample semantics under verification). | `4` bytes (`L3, L2, L1, L0`, big-endian `u32`) | `Confirmed` |
 
 #### Origin of the `00 FF FF` Prefix and Windows 4-Byte vs. 5-Byte Scanner Forms
 
@@ -276,16 +276,23 @@ All framing markers on `EP 0x83 IN` begin with the 3-byte prefix `00 FF FF` foll
   return h[4] == expected;
   ```
 
-#### AUDIO Header (`00 FF FF 58` + 4 Bytes: `h[0..3]`)
+#### AUDIO Header (`00 FF FF 58` + 4 Bytes: `h[0..3]`) and Post-Audio DMA Filler
 
-- **Structure**: `4` bytes immediately following `00 FF FF 58`, encoding a **32-bit big-endian** payload byte count (`Confirmed`, `FUN_1400a8a88` in [`PROTOCOL.md`](../PROTOCOL.md) line 141 and `gc550_parse_ordered_bytes()` in [`kernel/gc550-video.c`](../kernel/gc550-video.c) lines 266–275):
-  ```c
-  p->audio_rem = get_unaligned_be32(p->hdr_buf);
-  ```
+- **Packet Structure (`Confirmed` via [`PROTOCOL.md`](../PROTOCOL.md) lines 141, 178, 848–852 and [`kernel/gc550-video.c`](../kernel/gc550-video.c) lines 214–217, 266–288)**:
+  - **Audio Marker**: `00 FF FF 58` (`GC550_MARKER_AUDIO`, 4 bytes).
+  - **Payload Length Header**: `4` bytes immediately following `00 FF FF 58`, encoding a **32-bit big-endian** payload byte count (`p->audio_rem = get_unaligned_be32(p->hdr_buf)`).
+  - **Audio Payload**: `p->audio_rem` bytes of audio packet payload.
+  - **Post-Audio DMA Filler**: `AA 55 55 AA` repeating pattern padding the remainder of the FX3 `16 KiB` DMA buffer window after the audio payload until the next frame's `00 FF FF C0` (`SAV`) marker.
 - **Sanity Bounds in `gc550.ko` (`Confirmed`)**:
   - Accepted in [`kernel/gc550-video.c`](../kernel/gc550-video.c) (line 270) iff `p->audio_rem > 0 && p->audio_rem <= 65536`. Otherwise, `p->state` returns to `GC550_STATE_IDLE` (without incrementing `p->desync_count`).
-- **Observed Payload Size (`Confirmed` in [`PROTOCOL.md`](../PROTOCOL.md) lines 178, 848, 957)**:
-  - `3,200` bytes (`800` stereo S16_LE frames) per video frame at `1080p60`, and `3,840` bytes (`960` stereo S16_LE frames) per video frame at `1080p50`.
+- **Parser Processing and `audio_bytes` Exclusion Rules (`Confirmed` in [`kernel/gc550-video.c`](../kernel/gc550-video.c) lines 214–217, 266–288, 357–365)**:
+  - When `gc550_parse_ordered_bytes()` matches `00 FF FF 58`, `gc550_handle_marker()` transitions to `GC550_STATE_AUDIO_HEADER` without counting the 4-byte marker in `p->audio_bytes`.
+  - In `GC550_STATE_AUDIO_HEADER`, the 4-byte big-endian length header is collected into `p->hdr_buf[0..3]` and decoded into `p->audio_rem` without counting those 4 bytes in `p->audio_bytes`.
+  - In `GC550_STATE_AUDIO_DATA`, `gc550_parse_ordered_bytes()` computes `take = min_t(size_t, len - i, p->audio_rem)`, adds `p->audio_bytes += take`, and passes the exact same byte slice (`&data[i]`, `take`) to `gc550_audio_push_samples(dev, &data[i], take)`. When `p->audio_rem` reaches `0`, the parser transitions to `GC550_STATE_IDLE`, where all trailing `AA 55 55 AA` DMA filler bytes are skipped while scanning for the next `0x00` marker prefix.
+  - Consequently, `p->audio_bytes` excludes the 4-byte `00 FF FF 58` marker, the 4-byte big-endian length field, and the trailing `AA 55 55 AA` filler.
+- **Observed Payload Sizes — Titan GC550 Measurements vs. Upstream `PROTOCOL.md` (`Confirmed`)**:
+  - **Measured on Titan (GC550 `07ca:4710` at `1080p60` in Phases B2 and C1–C3)**: Approximately `3,200` payload bytes per video frame (`~192,000` bytes/s; see Section F.4 below).
+  - **Documented by Upstream Reverse Engineering ([`PROTOCOL.md`](../PROTOCOL.md) lines 178, 848, 957 on GC551)**: `3,200` bytes per video frame at `1080p60` and `3,840` bytes per video frame at `1080p50`, both corresponding to the same nominal `192,000` bytes/s (`800` or `960` four-byte units per frame if interpreted as stereo `S16_LE` frames; actual GC550 sample format and sample semantics under verification).
 
 ### 3. Video Payload Format and Interleaving Structure
 
@@ -296,8 +303,8 @@ Within each video frame period on `EP 0x83 IN`, packets are interleaved in the f
 | 00 FF FF C0 | b0 b1 b2 b3 | 00 00 10 80 | Active YUYV Pixels (W * H * 2 B = sizeimage)            |
 | (SAV, 4 B)  | (SAV Hdr)   | (1st Word)  | (Limited-Range YUYV 4:2:2, Rec. 709)                    |
 +---------------------------------------------------------------------------------------------------+
-| 00 FF FF C1 | c0 c1 c2 c3 c4 | 00 FF FF 58 | L3 L2 L1 L0 (BE32) | PCM Audio Payload (LE S16)      |
-| (EAV, 4 B)  | (EAV Hdr, 5 B) | (AUDIO, 4B) | (Audio Len, 4 B)   | (e.g. 3,200 B @ 60 fps)         |
+| 00 FF FF C1 | c0 c1 c2 c3 c4 | 00 FF FF 58 | L3 L2 L1 L0 (BE32) | Audio payload bytes (sample     |
+| (EAV, 4 B)  | (EAV Hdr, 5 B) | (AUDIO, 4B) | (Audio Len, 4 B)   | format & semantics under verif.)|
 +---------------------------------------------------------------------------------------------------+
 | AA 55 55 AA AA 55 55 AA ... (DMA filler pattern padding out the remainder of the 254 x 16 KiB     |
 |                              frame period until the next frame's 00 FF FF C0 SAV marker)          |
@@ -354,7 +361,7 @@ The table below compares the current C implementation in [`kernel/gc550-video.c`
 | **Short-Frame Neutral YUYV Black Tail Padding** | In `gc550_complete_video_frame()` (lines 173–179): when `done_buf` is present and `p->video_pos < frame_size` (within `[frame_size - 0x4000, frame_size - 1]`), fills `vbuf[p->video_pos .. frame_size - 1]` with `gc550_yuyv_black[i & 3]` (`{16, 128, 16, 128}`). | **Not implemented** in `StreamParser.complete_video_frame()` because `StreamParser` does not maintain a frame pixel buffer. | **Differs**: Kernel performs `{16, 128, 16, 128}` tail fill on `vb2` memory; Python model has no pixel buffer or tail-fill logic. |
 | **False-Prefix Flush in `VIDEO_DATA`** | In `gc550_parse_ordered_bytes()` (lines 329–331): calls `gc550_append_video_bytes(dev, prefix_bytes, p->marker_stage)` to copy the held-back `{0x00, 0xFF, 0xFF}` prefix bytes into `cur_buf` and advance `p->video_pos`. | In `parse_ordered_bytes()` (lines 436–437): calls `self.append_video_bytes(self.marker_stage)`, advancing `self.video_pos` by `1..3` without copying `prefix_bytes`. | **Differs**: Kernel writes actual `prefix_bytes` into `vb2` plane memory; Python only increments `video_pos`. |
 | **`frame_sequence` and Diagnostic Counters** | `struct gc550_stream_parser` has only `frame_sequence` (`u64`) and `desync_count` (`u32`). Crucially, `p->frame_sequence++` in `gc550_complete_video_frame()` (line 183) only executes inside `if (done_buf)` (i.e. when a queued V4L2 `gc550_buffer` was available). | `StreamParser` increments `self.frame_sequence += 1` unconditionally on every accepted frame (line 323) and adds 14 offline diagnostic counters/timestamps (`video_spans`, `rejected_video_spans`, `audio_pkt_sizes`, `audio_declared_sizes`, `invalid_audio_hdr_count`, `incomplete_audio_pkts`, `incomplete_audio_bytes`, `audio_bytes_total`, EAV window counters) plus `incomplete_audio_pkts` tracking in `reset()`. | **Differs**: Kernel `frame_sequence` depends on `done_buf != NULL` and `gc550_parser_reset()` does not track incomplete audio packets; Python increments `frame_sequence` without a buffer queue and tracks extra offline audio/video metrics. |
-| **Audio Payload Delivery** | `gc550_parse_ordered_bytes()` (line 281) calls `gc550_audio_push_samples(dev, &data[i], take)` to copy received PCM bytes into the ALSA ring buffer and trigger `snd_pcm_period_elapsed()`. | `parse_ordered_bytes()` (lines 399–414) only increments `cur_audio_pkt_received`, `audio_bytes_total`, and `audio_bytes_since_first_eav` by `take`. | **Differs**: Kernel pushes audio bytes into ALSA `runtime->dma_area`; Python only counts bytes. |
+| **Audio Payload Delivery** | `gc550_parse_ordered_bytes()` (line 281) calls `gc550_audio_push_samples(dev, &data[i], take)` to copy received audio payload bytes into the ALSA ring buffer (when an ALSA capture substream is active) and trigger `snd_pcm_period_elapsed()`. | `parse_ordered_bytes()` (lines 399–414) only increments `cur_audio_pkt_received`, `audio_bytes_total`, and `audio_bytes_since_first_eav` by `take`. | **Differs**: Kernel pushes audio payload bytes into ALSA `runtime->dma_area` when an ALSA capture substream is active; Python only counts bytes. |
 
 #### Scope of the Stage 4A-1 Offline Unit Tests (`TestStage4AProbeOffline`)
 
@@ -466,8 +473,8 @@ In [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h), the initialization
                               | Parallel GPIF II Bus
                               v
 +-------------------+   +--------------------+
-| TLV320AIC3x (0x18)|   | Cypress FX3        |===> EP 0x83 IN (00 FF FF 58 + BE32 len + S16_LE PCM)
-| Analog Audio      |   +--------------------+
+| TLV320AIC3x (0x18)|   | Cypress FX3        |===> EP 0x83 IN (00 FF FF 58 + BE32 len + Audio payload bytes
+| Analog Audio      |   +--------------------+     [sample format and sample semantics under verification])
 +-------------------+
 ```
 
@@ -575,19 +582,98 @@ Based on the Analog Devices ADV7604 Hardware Manual (Rev. F) and verified regist
 | `0x1` | `0001` | Not indicated (`CS` unspecified) | N/A |
 
 > [!IMPORTANT]
-> **Unverified Hardware Assumptions Regarding GC550 Audio Sample-Rate Detection**:
-> 1. **End-to-End Sample-Rate Path Is Unresolved (`Unknown`)**: Live hardware testing across `32 kHz`, `44.1 kHz`, and `48 kHz` HDMI inputs has **not** yet been performed on the GC550. Whether the FPGA/FX3 passes native sample rates into `00 FF FF 58` packets or resamples to `48 kHz` is unknown.
-> 2. **`N`/`CTS` Multi-Byte Latching Is Unverified (`Unknown`)**: Do **not** assume that reading `HDMI[0x5B]` latches a coherent multi-byte `N`/`CTS` snapshot across `HDMI[0x5B..0x5F]` without primary datasheet verification. (Notably, `gc550_init_blob` itself reads `0x5B` and `0x5D` as separate 3-byte transactions rather than a single 5-byte read.)
-> 3. **Host USB Byte-Rate Measurement Is Diagnostic Only**: Computing the `00 FF FF 58` payload byte rate per second on the host is a diagnostic observation of USB packet delivery, **not** an authoritative hardware sample-rate detector.
+> **Hardware Caveats Regarding GC550 Audio Sample-Rate Detection**:
+> 1. **`N`/`CTS` Multi-Byte Latching Is Unverified (`Unknown`)**: Do **not** assume that reading `HDMI[0x5B]` latches a coherent multi-byte `N`/`CTS` snapshot across `HDMI[0x5B..0x5F]` without primary datasheet verification. (Notably, `gc550_init_blob` itself reads `0x5B` and `0x5D` as separate 3-byte transactions rather than a single 5-byte read.)
+> 2. **Host USB Byte-Rate Measurement Is Diagnostic Only (`Confirmed`)**: As confirmed on Titan in Phases B2–C3 below, `parser.audio_bytes` measures the declared USB packet payload size (`~3,200` bytes/frame at `1080p60` = `~192,000` bytes/s) regardless of whether the HDMI source is idle (`cs_valid=0`), `48 kHz`, or `44.1 kHz`. Computing the `00 FF FF 58` payload byte rate per second on the host therefore **cannot** distinguish incoming HDMI sample rates or independently establish the actual PCM sample rate.
 
-### 4. Current `gc550.ko` ALSA Implementation (`Confirmed`)
+### 4. Audio Payload Accounting (Phase D1 Analysis) and Verified Titan Hardware Findings (Phases B2, C1, C2, and C3)
 
-In [`kernel/gc550-audio.c`](../kernel/gc550-audio.c) (lines 21–37, 164–220), `gc550.ko` implements a fixed `48 kHz` stereo 16-bit little-endian ALSA capture subdevice (`gc550_pcm_hw`):
+> **Phase Provenance**: All hardware measurements in this section originate from **Phases B2, C1, C2, and C3** on Titan (`07ca:4710`). **Phase D1** was a read-only code and protocol investigation that analyzed those hardware observations against [`kernel/gc550-video.c`](../kernel/gc550-video.c), [`kernel/gc550-audio.c`](../kernel/gc550-audio.c), and [`PROTOCOL.md`](../PROTOCOL.md).
 
-- **Format**: `SNDRV_PCM_FMTBIT_S16_LE` (`4` bytes per stereo frame).
-- **Rate**: `SNDRV_PCM_RATE_48000` (`rate_min = 48000`, `rate_max = 48000`).
-- **Channels**: `2` (`channels_min = 2`, `channels_max = 2`).
-- **Ring Buffer Delivery**: `gc550_audio_push_samples()` copies all `len` incoming payload bytes (`chunk = min(len, buf_bytes - dev->alsa_hw_ptr)`) under `dev->alsa_lock` (with `dev->alsa_inflight` reference tracking) into `substream->runtime->dma_area`, advancing `dev->alsa_hw_ptr` and `dev->alsa_period_pos` and calling `snd_pcm_period_elapsed(substream)` whenever `dev->alsa_period_pos >= period_bytes` (`Confirmed`).
+#### Audio Packet Structure and Parser Accounting (`Confirmed` in [`kernel/gc550-video.c`](../kernel/gc550-video.c) & [`kernel/gc550-audio.c`](../kernel/gc550-audio.c))
+
+1. **Wire Structure on `EP 0x83 IN`**:
+   - **Audio marker (`4` bytes)**: `00 FF FF 58` (`GC550_MARKER_AUDIO`), emitted once per video frame after the closing `EAV` header.
+   - **Payload length header (`4` bytes)**: Big-endian `u32` (`p->audio_rem = get_unaligned_be32(p->hdr_buf)`).
+   - **Audio payload (`p->audio_rem` bytes)**: Audio payload bytes declared by the length header (sample format and sample semantics under verification).
+   - **Post-audio DMA filler**: Repeating `AA 55 55 AA` pattern padding the remainder of the FX3 `16 KiB` DMA buffer window until the next frame's `00 FF FF C0` (`SAV`) marker.
+2. **How `gc550_parse_ordered_bytes()` and `gc550_audio_push_samples()` Process the Payload (`Confirmed`)**:
+   - In [`kernel/gc550-video.c`](../kernel/gc550-video.c) (lines 214–217, 266–288, 357–365), `gc550_handle_marker()` consumes the 4-byte `00 FF FF 58` marker and transitions to `GC550_STATE_AUDIO_HEADER`.
+   - `GC550_STATE_AUDIO_HEADER` consumes the 4-byte big-endian length header into `p->hdr_buf[0..3]`, decodes `p->audio_rem`, and transitions to `GC550_STATE_AUDIO_DATA` when `0 < p->audio_rem <= 65536`.
+   - In `GC550_STATE_AUDIO_DATA`, the parser bypasses marker scanning and consumes `take = min_t(size_t, len - i, p->audio_rem)` bytes per chunk, increments `p->audio_bytes += take`, and passes the identical byte span (`&data[i]`, `take`) directly to `gc550_audio_push_samples(dev, &data[i], take)`. When `p->audio_rem == 0`, it returns to `GC550_STATE_IDLE`, skipping all trailing `AA 55 55 AA` DMA filler bytes until the next `0x00` marker prefix.
+   - The parser therefore **excludes** the 4-byte `00 FF FF 58` marker, the 4-byte big-endian length field, and the trailing `AA 55 55 AA` filler from `parser.audio_bytes`.
+3. **What `parser.audio_bytes` Measures vs. What It Does Not Establish (`Confirmed`)**:
+   - `parser.audio_bytes` measures **exclusively the payload byte count declared by the FPGA's 4-byte big-endian length field** (`p->audio_rem`) and passed to `gc550_audio_push_samples()`.
+   - Because the parser does not inspect the contents of those payload bytes, `parser.audio_bytes` **does not independently establish**:
+     - The number of unique PCM samples.
+     - Whether samples are duplicated.
+     - Whether padding or silence is embedded inside the declared payload.
+     - The actual audio sample rate.
+
+#### Fixed Payload Observations: Measured Titan GC550 Results vs. Upstream `PROTOCOL.md` (`Confirmed`)
+
+Controlled V4L2 capture tests (`1920×1080p60`, `swap_mode=0`, `desyncs=0`, with a Raspberry Pi 3B HDMI source and the GC550 ALSA PCM device closed) were conducted on **Titan** (`7.3.1-1-cachyos`, `07ca:4710`) in Phases B2, C1, C2, and C3:
+
+| Phase | HDMI audio condition | Audio bytes | Video frames |
+|---|---|---:|---:|
+| B2 | No active HDMI audio | 959,984 | 300 |
+| C1 | 48 kHz, valid channel status | 11,523,052 | 3,600 |
+| C2 | 44.1 kHz source, incorrect channel-status metadata | 11,523,044 | 3,600 |
+| C3 | 44.1 kHz, valid channel status | 11,523,036 | 3,600 |
+
+- **Measured on Titan (`GC550`, `1080p60`) (`Confirmed` observation)**:
+  - Across all four phases, the observed audio payload is approximately **`3,200` bytes per video frame** or **`192,000` bytes/s** (`300 × 3,200 = 960,000` B in Phase B2; `3,600 × 3,200 = 11,520,000` B plus one boundary packet of `~3,036..3,052` B in Phases C1–C3).
+- **Reported by Upstream Reverse Engineering ([`PROTOCOL.md`](../PROTOCOL.md) lines 178, 848, 957 on `GC551`) (`Confirmed` upstream reference)**:
+  - Upstream `PROTOCOL.md` documents a `3,200`-byte audio payload per video frame at `1080p60` (`48 kHz × 4 B ÷ 60`) and a **`3,840`-byte audio payload per video frame at `1080p50`** (`48 kHz × 4 B ÷ 50`, observed on a Sony A7 III `1080p50` capture on GC551), both corresponding to the same nominal **`192,000` bytes/s**. (Note: the `1080p50` `3,840`-byte figure is from upstream `PROTOCOL.md`, not a Titan measurement.)
+
+#### HDMI Sample-Rate Verification on Titan (`Confirmed`)
+
+- **Phase C1 (`48 kHz` reference)**: With the Raspberry Pi 3B outputting a `48,000 Hz` stereo `S16_LE` (`IEC958_SUBFRAME_LE`, `AES3=0x02`) 1 kHz sine wave, `gc550_log_signal_status()` read `ADV7604 IO[0x65] = 0x82 -> 0x82` (`bit 7 / cs_valid = 1 -> 1`) and `HDMI[0x39] = 0x02` (`cs_fs = 0x2`), confirming valid **`48,000 Hz`** IEC 60958 channel status at the ADV7604 receiver (`11,523,052` audio bytes over `3,600` frames).
+- **Phase C3 (`44.1 kHz` verified)**: With the Raspberry Pi 3B hardware parameters verified at `44,100 Hz` (`IEC958_SUBFRAME_LE`) and the ALSA IEC958 channel-status byte explicitly set to `AES3=0x00` (`numid=4`: `AES0=0x04 AES1=0x82 AES2=0x00 AES3=0x00`), `gc550_log_signal_status()` read `ADV7604 IO[0x65] = 0x82 -> 0x82` (`bit 7 / cs_valid = 1 -> 1`) and `HDMI[0x39] = 0x00` (`cs_fs = 0x0`), confirming valid **`44,100 Hz`** IEC 60958 channel status at the ADV7604 receiver (`11,523,036` audio bytes over `3,600` frames).
+- **Comparison of C1 (`48 kHz`) and C3 (`44.1 kHz`)**: Both verified conditions produced practically identical USB audio payload totals over `3,600` video frames, differing by only **`16` bytes** (`11,523,052` vs. `11,523,036` bytes).
+- **Note on Phase C2 (Incorrect Channel-Status Metadata)**: In Phase C2, the Raspberry Pi hardware ran at `44,100 Hz`, but the default ALSA `hdmi` plugin configuration transmitted `AES3=0x02` (`48 kHz`) in the IEC 60958 channel status (`HDMI[0x39] = 0x02`). Phase C2 is recorded only as a test with incorrect source channel-status metadata, **not** as a valid `44.1 kHz` receiver verification.
+
+#### Architectural Implications and Competing Hypotheses (`Confirmed` Fixed Rate / `Unknown` Conversion Location)
+
+Because Phase B2 demonstrated that the GC550 continues generating `~3,200` audio payload bytes per video frame (`959,984` bytes over `300` frames) even when no valid HDMI audio is present (`IO[0x65] = 0x40`, `cs_valid = 0`), and Phases C1 and C3 delivered virtually identical byte totals (`~192,000` bytes/s) at both `48 kHz` and `44.1 kHz`, the USB audio packet byte rate is fixed relative to the video frame period rather than scaling with the incoming HDMI sample rate.
+
+As empirically demonstrated in Phase D2 below, the GC550 hardware delivers a continuous `48 kHz` stereo `S16_LE` audio payload to the host ALSA interface under both `48 kHz` and `44.1 kHz` HDMI input. The driver performs no host-side resampling and passes demultiplexed payload bytes directly to ALSA ring buffers. Rate conversion upstream of the host ALSA interface is empirically supported by the preserved recordings. However, the exact internal silicon location and implementation mechanism (ADV7604 internal processing, an on-board DSP, or Cypress FX3 firmware) remain **unknown**.
+
+### 5. Hardware Audio Capture and Offline Signal Analysis (Phases D2.1 & D2.2.7) (`Confirmed`)
+
+> **Phase Provenance**: Physical ALSA audio captures were executed on **Titan** (`7.3.1-1-cachyos`, `07ca:4710`) during **Phase D2.1**. Rigorous offline spectral, continuity, and statistical reproducibility audits were completed in **Phases D2.2 through D2.2.7** using [`scratch/verify_d2_audio.py`](../scratch/verify_d2_audio.py) and verified against machine-readable JSON metrics. Note: These 30-second ALSA recordings are designated **D2 Condition 1** and **D2 Condition 2**, distinct from the earlier Phases B2 and C1–C3 (which were V4L2-only payload-byte tests with the ALSA device closed).
+
+#### Capture Execution and Filesystem Verification (`Confirmed`)
+Two controlled 30-second ALSA captures (`arecord -D hw:3,0 -f S16_LE -c 2 -r 48000`) were performed with concurrent V4L2 streaming (`1080p60`, 3,600 frames) using a 1,000 Hz dual-mono reference sine wave from a Raspberry Pi 3B:
+1. **D2 Condition 1 (48 kHz HDMI Input)**: Captured to [`/tmp/gc550_d2_48k_raw_retry.pcm`](/tmp/gc550_d2_48k_raw_retry.pcm) (`5,760,000` bytes, `1,440,000` frames @ `48,000 Hz`). ADV7604 decoded rate: `48,000 Hz` (`HDMI[0x39] = 0x02`, `AES3=0x02`). Exit code 0, 0 parser desyncs.
+2. **D2 Condition 2 (44.1 kHz HDMI Input)**: Captured to [`/tmp/gc550_d2_44k1_raw.pcm`](/tmp/gc550_d2_44k1_raw.pcm) (`5,760,000` bytes, `1,440,000` frames @ `48,000 Hz`). ADV7604 decoded rate: `44,100 Hz` (`HDMI[0x39] = 0x00`, `AES3=0x00`). Exit code 0, 0 parser desyncs.
+
+#### Key Audio Findings (`Confirmed`)
+- **Fixed 48 kHz ALSA Capture Success**: ALSA capture succeeded at `48,000 Hz` stereo `S16_LE` under both `48 kHz` and `44.1 kHz` HDMI input conditions. The driver performs no software resampling.
+- **Audio Transport Continuity**: No audio discontinuities or transport repetitions were detected in the analyzed 30-second captures (`0` cycle length anomalies `> 0.5 samples` across all `30,000` cycles in both conditions).
+- **Linear Scaling and Duplicate Samples**: Peak amplitudes were scaled identically from reference `±24,000 LSB` down to `±22,981 LSB` (`-0.376 dBFS`). Duplicate samples occurred exclusively at turning-point apexes (`|s| >= 22,900 LSB`), matching the integer quantization of the scaled continuous sine model (`180/180` matches in D2 Condition 1, `165/165` in D2 Condition 2). Zero slope duplicates and zero zero-crossing repetitions were observed.
+- **Quantization Line Reproduction**: Spectral lines at `2.9 kHz`, `4.9 kHz`, `6.8 kHz`, and `8.8 kHz` originate from 16-bit integer quantization on the Raspberry Pi `44.1 kHz` grid (`gcd(1000, 44100) = 100 Hz`) and are faithfully reproduced through the GC550 capture pipeline.
+- **Residual Measurements**:
+  - **D2 Condition 1**: Continuous sine-model residual ($r_{\text{cont}}[n] = s[n] - y_{\text{fit}}[n]$) is `5.460 LSB RMS` (`18.6 LSB max`), with integer-quantized residual ($r_{\text{int}}[n] = s[n] - \text{round}(y_{\text{fit}}[n])$) at `5.468 LSB RMS` (`19.0 LSB max`). Residual spectral peaks occur at `996.00 Hz` (`2.69 LSB`, `-78.64 dBc`), `998.40 Hz` (`2.83 LSB`, `-78.20 dBc`), and `1003.20 Hz` (`2.95 LSB`, `-77.82 dBc`).
+  - **D2 Condition 2**: Continuous residual is `0.511 LSB RMS` (`2.0 LSB max`), integer residual is `0.584 LSB RMS` (`2.0 LSB max`), with residual spectral peaks suppressed to `0.08 LSB` (`-109.18 dBc`).
+  - **Spectral Metrics (IEEE-1241-inspired measurement methodology)**: D2 Condition 1 achieved `THD = -95.37 dB`, `SNR = 92.50 dB`, `SINAD = 90.69 dB` (`ENOB = 14.77 bits`). D2 Condition 2 achieved `THD = -97.01 dB`, `SNR = 91.68 dB`, `SINAD = 90.57 dB` (`ENOB = 14.75 bits`).
+
+#### Boundary Between Established Facts and Unproven Hypotheses
+- **Confirmed Observation**: The GC550 capture pipeline delivers a continuous `48 kHz` stereo `S16_LE` stream when fed a `44.1 kHz` HDMI source, with zero driver-level resampling. Rate conversion upstream of the host ALSA interface is empirically supported by the preserved recordings.
+- **Unproven Hypotheses**:
+  1. Attributing the residual spectral peaks in D2 Condition 1 to ADV7604 HDMI Audio Clock Regeneration (ACR) PLL tracking jitter or loop-filter modulation is **unproven**.
+  2. Attributing the lower residual in D2 Condition 2 to rate-converter FIFO decoupling from the input clock is **unproven**.
+  3. The exact internal silicon architecture and physical location of the rate-conversion block (ADV7604 internal processing, an on-board DSP, or Cypress FX3 firmware) remain **unknown**.
+  4. The observed `+14.2 ppm` relative clock offset is a relative measurement between two unsynchronized oscillators (Pi transmitter vs GC550 capture clock) and does not independently establish the absolute accuracy or drift of either crystal.
+
+### 6. Confirmed `gc550.ko` ALSA Implementation (`Confirmed` Driver Code & Hardware Operation)
+
+In [`kernel/gc550-audio.c`](../kernel/gc550-audio.c) (lines 21–37, 164–220), `gc550.ko` advertises a fixed `48 kHz` stereo 16-bit little-endian ALSA capture subdevice (`gc550_pcm_hw`):
+
+- **Driver Format**: `SNDRV_PCM_FMTBIT_S16_LE` (`4` bytes per stereo frame).
+- **Driver Rate**: Fixed `SNDRV_PCM_RATE_48000` (`rate_min = 48000`, `rate_max = 48000`).
+- **Driver Channels**: `2` (`channels_min = 2`, `channels_max = 2`).
+- **Hardware Alignment**: Because the GC550 hardware capture endpoint consistently delivers `48 kHz` stereo `S16_LE` samples regardless of incoming HDMI sample rate (`48 kHz` or `44.1 kHz`), dynamic ALSA sample-rate switching is unnecessary and unsupported by the hardware capture stream. The fixed `48 kHz` ALSA configuration is the empirically verified, permanent driver design.
 
 ---
 
@@ -608,5 +694,5 @@ The table below summarizes the established reverse-engineering findings, their e
 | **Capture Stream Framing & Runtime Validation**: `SAV` (`00 FF FF C0` + 4B), `EAV` (`00 FF FF C1` + 5B), `AUDIO` (`00 FF FF 58` + BE32 len), `AA 55 55 AA` filler. Five sizes in `gc550_frame_sizes[]`: `1920×1080`, `1280×720`, `720×576`, `720×480`, `640×480`. | [`PROTOCOL.md`](../PROTOCOL.md), [`kernel/gc550-video.c`](../kernel/gc550-video.c), [`CHANGELOG.md`](../CHANGELOG.md), [`README.md`](../README.md), [`TODO.md`](../TODO.md). | `Confirmed` | Endurance testing (`3.6+ hours`, `776,295` frames) was performed only at `1080p60` on Niri (`7.3.1-1-cachyos`); lower resolutions were tested for `100–120` frames each. V4L2 interval enumeration currently hardcodes `60 fps` for all sizes. |
 | **Kernel Stream Parser vs. Offline Python `StreamParser`**: Both implement `marker_stage` `0..3`, 2-vote `swap_mode` (`video_pos <= 32768 && eav_c0 != sav_b0`), `32 KiB` `pair_buf` reordering, `4,163,585` B span saturation, and `±0x4000` span tolerance, but differ in `vb2` buffer copying, `{16, 128, 16, 128}` tail padding, `frame_sequence` gating (`if (done_buf)`), and ALSA delivery. | [`kernel/gc550-video.c`](../kernel/gc550-video.c), `scratch/gc550_stage4a_probe.py`. | `Confirmed` | All 7 unit tests in `TestStage4AProbeOffline` cover **only** the offline Python model on synthetic byte arrays; the kernel's `gc550_yuyv_black` short-frame tail fill has not yet been triggered by a natural short span on hardware ([`TODO.md`](../TODO.md) line 18). |
 | **Programmed EDID (`0x36`) & `REP[0x77]` State in `gc550_init_blob`**: `steps 286..293` write the 256-byte `"ADI HDMI TV"` EDID (`0x91..0xA3` Audio Data Block, header `0x32`, LPCM SAD #1 `0f 7f 07` = 8-ch, `32..192 kHz`, `16/20/24-bit`, plus AC-3, DTS, E-AC-3, DTS-HD, TrueHD), then `steps 309..317` sequence `REP[0x77]` `01 -> 03 -> 07 -> 0F -> 00`. | [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h) lines 180–200, [`PROTOCOL.md`](../PROTOCOL.md) line 686. | `Confirmed` (bytes & `REP[0x77]=0x00` in `gc550_init_blob`) / `Unknown` (runtime DDC source) | The final `REP[0x77] = 0x00` write at `step 317` disables all four internal ADV7604 EDID ports (`bits 3:0`), and `steps 326..349` pulse the `PCA9539A` reset line a second time and rewrite `IO[0xF3..0xFE]` (`steps 351..373`) **without** rewriting `0x36` or `REP[0x77]`. What EDID the HDMI source actually receives on GC550 hardware is unresolved. |
-| **End-to-End Audio Sample-Rate Handling (`32 kHz`, `44.1 kHz`, `48 kHz`)**: `ADV7604` provides `CS_DATA_VALID_RAW` (`IO[0x65][7]`), `NEW_SAMP_RT_RAW` (`IO[0x7E]` bit 4 in Section 7.18.8 vs. bit 3 in Table 38 of Rev. F manual; clear `IO[0x80][3]`; does not trigger when `CS_DATA_VALID_RAW == 0`), `CS_DATA` (`HDMI[0x36..0x3A]`), and `N`/`CTS` (`HDMI[0x5B..0x5F]`), while `gc550.ko` currently supports fixed `48 kHz` (`SNDRV_PCM_RATE_48000`). | [`kernel/gc550-audio.c`](../kernel/gc550-audio.c), [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h), ADV7604 Hardware Manual Rev. F. | `Confirmed` (current fixed-48 kHz driver & `gc550_init_blob` accesses) / `Unknown` (`IO[0x7E]` bit 4 vs. 3, `IO[0x7F][3]`, & end-to-end rate path) | The `IO[0x7E]` bit 4 vs. bit 3 discrepancy for `NEW_SAMP_RT_RAW` in the Rev. F manual and `NEW_SAMP_RT_ST` at `IO[0x7F][3]` are unverified; whether the FPGA/FX3 passes `32 kHz` and `44.1 kHz` audio natively over `EP 0x83 IN` or resamples to `48 kHz`, whether `HDMI[0x39]` and `HDMI[0x5B..0x5F]` reliably reflect all sources, and whether `0x4A` or `0x3D` require rate-specific writes remain **unresolved**. |
+| **Audio Transport & Sample-Rate Handling (Phases B2, C1–C3, D1, D2.1, D2.2.7)**: Fixed `48 kHz` stereo `S16_LE` ALSA capture confirmed on Titan under both `48,000 Hz` (D2 Condition 1) and `44,100 Hz` (D2 Condition 2) HDMI input. ADV7604 correctly reports HDMI input rate (`IO[0x65]`, `HDMI[0x39]`). Audio continuity verified across 30-second captures (`0` anomalies `> 0.5 samples`). Signal converts from `44.1 kHz` to `48 kHz` upstream of host USB capture. Duplicate samples occur exclusively at turning-point apexes (`|s| >= 22,900 LSB`). | [`kernel/gc550-video.c`](../kernel/gc550-video.c), [`kernel/gc550-audio.c`](../kernel/gc550-audio.c), [`kernel/gc550-cmd.c`](../kernel/gc550-cmd.c), Titan hardware captures C1/C2, offline analysis script `verify_d2_audio.py`. | `Confirmed` (Fixed `48 kHz` `S16_LE` capture, ADV7604 rate decoding, transport continuity) / `Unknown` (Internal silicon conversion block) | Fixed `48 kHz` ALSA capture configuration confirmed permanent; dynamic rate switching is unnecessary. Exact internal silicon component and conversion location (`44.1 kHz -> 48 kHz`) remain `Unknown`. |
 | **Uncharacterized I2C Slaves (`0x4A`, `0x65`, `0x3F`) & FPGA (`0x10`) Registers**: Addressed in `gc550_init_blob` (`0x4A`: `125`W/`106`R; `0x65`: `4`W; `0x3F`: `8`×32B R; `0x10`: `18`W/`6`R). | [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h), [`PROTOCOL.md`](../PROTOCOL.md) lines 579–581. | `Confirmed` (I2C transactions) / `Unknown` (IC identities & register maps) | Exact IC part numbers and register definitions of `0x4A`, `0x65`, and `0x3F`, as well as the internal register map of the Lattice ECP3 FPGA (`0x10`), remain `Unknown`. |
