@@ -118,6 +118,7 @@ struct gc550_stream_parser {
 	u32 audio_rem;
 	u32 video_pos;
 	u64 frame_sequence;
+	u64 current_frame_sequence;
 	u64 audio_bytes;
 	u32 desync_count;
 

@@ -89,6 +89,92 @@ static bool gc550_eav_hdr_valid(const u8 *h)
 	return h[4] == expected;
 }
 
+static void gc550_finish_buffer(struct gc550_dev *dev,
+				struct gc550_buffer *buf,
+				enum vb2_buffer_state state)
+{
+	struct gc550_stream_parser *p = &dev->parser;
+	size_t frame_size = dev->pix_fmt.sizeimage;
+	size_t payload;
+
+	if (!buf)
+		return;
+
+	if (state == VB2_BUF_STATE_DONE) {
+		payload = frame_size;
+	} else {
+		if (p->video_pos == 0) {
+			u8 *vbuf = vb2_plane_vaddr(&buf->vb.vb2_buf, 0);
+
+			if (vbuf) {
+				memcpy(vbuf, gc550_yuyv_black,
+				       sizeof(gc550_yuyv_black));
+				payload = sizeof(gc550_yuyv_black);
+			} else {
+				payload = 0;
+			}
+		} else {
+			payload = min_t(size_t, (size_t)p->video_pos,
+					frame_size);
+		}
+	}
+
+	buf->vb.vb2_buf.timestamp = ktime_get_ns();
+	buf->vb.field = V4L2_FIELD_NONE;
+	buf->vb.sequence = p->current_frame_sequence;
+	vb2_set_plane_payload(&buf->vb.vb2_buf, 0, payload);
+	vb2_buffer_done(&buf->vb.vb2_buf, state);
+}
+
+static void gc550_abort_video_frame(struct gc550_dev *dev)
+{
+	struct gc550_stream_parser *p = &dev->parser;
+	struct gc550_buffer *abort_buf = NULL;
+	unsigned long flags;
+
+	spin_lock_irqsave(&dev->queue_lock, flags);
+	if (dev->cur_buf) {
+		abort_buf = dev->cur_buf;
+		dev->cur_buf = NULL;
+	}
+	spin_unlock_irqrestore(&dev->queue_lock, flags);
+
+	if (abort_buf)
+		gc550_finish_buffer(dev, abort_buf, VB2_BUF_STATE_ERROR);
+
+	p->video_pos = 0;
+}
+
+static void gc550_reserve_video_frame(struct gc550_dev *dev)
+{
+	struct gc550_stream_parser *p = &dev->parser;
+	struct gc550_buffer *abort_buf = NULL;
+	unsigned long flags;
+
+	spin_lock_irqsave(&dev->queue_lock, flags);
+	if (dev->cur_buf) {
+		abort_buf = dev->cur_buf;
+		dev->cur_buf = NULL;
+	}
+	spin_unlock_irqrestore(&dev->queue_lock, flags);
+
+	if (abort_buf)
+		gc550_finish_buffer(dev, abort_buf, VB2_BUF_STATE_ERROR);
+
+	p->current_frame_sequence = p->frame_sequence++;
+	p->sav_b0 = p->hdr_buf[0];
+	p->video_pos = 0;
+	p->state = GC550_STATE_VIDEO_DATA;
+
+	spin_lock_irqsave(&dev->queue_lock, flags);
+	if (!list_empty(&dev->buf_list)) {
+		dev->cur_buf = list_first_entry(&dev->buf_list,
+						struct gc550_buffer, list);
+		list_del_init(&dev->cur_buf->list);
+	}
+	spin_unlock_irqrestore(&dev->queue_lock, flags);
+}
+
 static void gc550_append_video_bytes(struct gc550_dev *dev,
 				     const u8 *src, size_t len)
 {
@@ -102,12 +188,6 @@ static void gc550_append_video_bytes(struct gc550_dev *dev,
 		return;
 
 	spin_lock_irqsave(&dev->queue_lock, flags);
-	if (!dev->cur_buf && !list_empty(&dev->buf_list)) {
-		dev->cur_buf = list_first_entry(&dev->buf_list,
-						struct gc550_buffer, list);
-		list_del(&dev->cur_buf->list);
-	}
-
 	if (dev->cur_buf && p->video_pos < frame_size) {
 		vbuf = vb2_plane_vaddr(&dev->cur_buf->vb.vb2_buf, 0);
 		room = frame_size - p->video_pos;
@@ -125,10 +205,18 @@ static void gc550_append_video_bytes(struct gc550_dev *dev,
 static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 {
 	struct gc550_stream_parser *p = &dev->parser;
-	struct gc550_buffer *done_buf = NULL;
+	struct gc550_buffer *buf = NULL;
 	size_t frame_size = dev->pix_fmt.sizeimage;
+	bool valid_span;
 	unsigned long flags;
 	size_t i;
+
+	spin_lock_irqsave(&dev->queue_lock, flags);
+	if (dev->cur_buf) {
+		buf = dev->cur_buf;
+		dev->cur_buf = NULL;
+	}
+	spin_unlock_irqrestore(&dev->queue_lock, flags);
 
 	/*
 	 * Detect 16 KiB FX3 ping-pong DMA swap:
@@ -146,6 +234,8 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 					     "FX3 16 KiB DMA buffer order switched to %s\n",
 					     p->swap_mode ? "SWAPPED" : "NORMAL");
 		}
+		if (buf)
+			gc550_finish_buffer(dev, buf, VB2_BUF_STATE_ERROR);
 		p->video_pos = 0;
 		return;
 	}
@@ -156,34 +246,26 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 	 * Accept a span within one 16 KiB FX3 DMA quantum of the selected
 	 * V4L2 frame size.
 	 */
-	if (p->video_pos < frame_size - GC550_FRAME_SPAN_TOLERANCE ||
-	    p->video_pos > frame_size + GC550_FRAME_SPAN_TOLERANCE) {
+	valid_span = (p->video_pos >= frame_size - GC550_FRAME_SPAN_TOLERANCE &&
+		      p->video_pos <= frame_size + GC550_FRAME_SPAN_TOLERANCE);
+
+	if (!valid_span) {
+		if (buf)
+			gc550_finish_buffer(dev, buf, VB2_BUF_STATE_ERROR);
 		p->video_pos = 0;
 		return;
 	}
 
-	spin_lock_irqsave(&dev->queue_lock, flags);
-	if (dev->cur_buf) {
-		done_buf = dev->cur_buf;
-		dev->cur_buf = NULL;
-	}
-	spin_unlock_irqrestore(&dev->queue_lock, flags);
-
-	if (done_buf) {
+	if (buf) {
 		if (p->video_pos < frame_size) {
-			u8 *vbuf = vb2_plane_vaddr(&done_buf->vb.vb2_buf, 0);
+			u8 *vbuf = vb2_plane_vaddr(&buf->vb.vb2_buf, 0);
 
 			if (vbuf)
 				for (i = p->video_pos; i < frame_size; i++)
 					vbuf[i] = gc550_yuyv_black[i & 3];
 		}
 
-		done_buf->vb.vb2_buf.timestamp = ktime_get_ns();
-		done_buf->vb.field = V4L2_FIELD_NONE;
-		done_buf->vb.sequence = p->frame_sequence++;
-		vb2_set_plane_payload(&done_buf->vb.vb2_buf, 0,
-				      frame_size);
-		vb2_buffer_done(&done_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+		gc550_finish_buffer(dev, buf, VB2_BUF_STATE_DONE);
 	}
 
 	p->video_pos = 0;
@@ -237,12 +319,11 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 			p->hdr_buf[p->hdr_pos++] = data[i++];
 			if (p->hdr_pos == 4) {
 				if (gc550_sav_hdr_valid(p->hdr_buf)) {
-					p->sav_b0 = p->hdr_buf[0];
-					p->video_pos = 0;
-					p->state = GC550_STATE_VIDEO_DATA;
+					gc550_reserve_video_frame(dev);
 				} else {
 					p->desync_count++;
 					p->state = GC550_STATE_IDLE;
+					gc550_abort_video_frame(dev);
 				}
 			}
 			continue;
@@ -257,8 +338,8 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 					p->state = GC550_STATE_POST_EAV;
 				} else {
 					p->desync_count++;
-					p->video_pos = 0;
 					p->state = GC550_STATE_IDLE;
+					gc550_abort_video_frame(dev);
 				}
 			}
 			continue;
@@ -438,6 +519,7 @@ static void gc550_urb_complete(struct urb *urb)
 				     "Stream URB status: %d (actual_len=%d)\n",
 				     urb->status, urb->actual_length);
 		/* Gap / USB transfer error: reset parser state */
+		gc550_abort_video_frame(dev);
 		gc550_parser_reset(&dev->parser);
 		break;
 	}
@@ -528,11 +610,11 @@ static int gc550_queue_setup(struct vb2_queue *vq, unsigned int *nbuffers,
 {
 	struct gc550_dev *dev = vb2_get_drv_priv(vq);
 
-	if (*nbuffers < 2)
-		*nbuffers = 2;
-
 	if (*nplanes)
 		return sizes[0] < dev->pix_fmt.sizeimage ? -EINVAL : 0;
+
+	if (*nbuffers < 2)
+		*nbuffers = 2;
 
 	*nplanes = 1;
 	sizes[0] = dev->pix_fmt.sizeimage;
@@ -550,6 +632,9 @@ static int gc550_buf_prepare(struct vb2_buffer *vb)
 			vb2_plane_size(vb, 0), size);
 		return -EINVAL;
 	}
+
+	if (!vb2_plane_vaddr(vb, 0))
+		return -EFAULT;
 
 	vb2_set_plane_payload(vb, 0, size);
 	return 0;
@@ -617,6 +702,7 @@ static int gc550_start_streaming(struct vb2_queue *vq, unsigned int count)
 
 	gc550_parser_reset(&dev->parser);
 	dev->parser.frame_sequence = 0;
+	dev->parser.current_frame_sequence = 0;
 	dev->parser.audio_bytes = 0;
 	if (READ_ONCE(dev->disconnected)) {
 		gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
