@@ -12,7 +12,10 @@ This file tracks planned features, technical design notes, and future experiment
   - **Historical Root Cause (`v0.1.0`)**: In `v0.1.0`, [`gc550_disconnect()`](kernel/gc550-core.c) called `kfree(dev)` immediately after `gc550_video_unregister(dev)` while userspace file descriptors (`/dev/videoX`, `/dev/snd/pcmC*`) were still open and mid-`ioctl`.
   - **Implemented and verified in `v0.1.1` on niri:** Device kref release is deferred through V4L2 and ALSA lifetimes; disconnect closes the URB submission gate, drains URBs and in-flight ALSA callbacks, and makes VB2 stop cleanup idempotent.
   - **Unplug test:** OBS was capturing video and audio. Disconnect completed after `29,629` frames with `0` desyncs and no kernel faults; replug registered the device and completed a cold bootstrap.
-- [ ] Field-test on primary production gaming rig.
+- [x] Field-test on primary production gaming rig (`Titan`):
+  - Verified on Titan (CachyOS `7.3.3-1`, AMD Ryzen 9 5900X, Radeon RX 9070 XT) via DKMS package `avermedia-gc550-dkms` (`0.1.3`).
+  - Sustained continuous 1080p60 capture in OBS Studio (`177,241` continuous frames, ~49.2 minutes) with `0` driver desyncs (13 frames dropped downstream purely due to OBS video encoder load).
+  - ALSA audio capture verified with continuous `44.1 kHz` FLAC audio (*"In the Hall of the Mountain King"*) streamed over HDMI from a Raspberry Pi 3B into the GC550 `48 kHz` stereo capture pipeline with zero glitches or sync drift.
 
 ## Stability Hardening Follow-up
 - [x] Fill the uncopied tail of accepted short V4L2 frames with neutral YUYV black to prevent stale buffer contents (implemented in `v0.1.2`; no naturally accepted short span was observed, so this path was not exercised).
