@@ -360,7 +360,7 @@ The table below compares the current C implementation in [`kernel/gc550-video.c`
 | **Span Counter Saturation (`GC550_MAX_FRAME_SPAN`)** | In `gc550_append_video_bytes()` (lines 120–122): `GC550_MAX_FRAME_SPAN = GC550_FRAME_SIZE + 0x4000` (`4,163,584` B). If `p->video_pos <= GC550_MAX_FRAME_SPAN`, clamps `p->video_pos` to `min(p->video_pos + len, GC550_MAX_FRAME_SPAN + 1)` (`4,163,585` B). | In `append_video_bytes()` (lines 289–290): `MAX_FRAME_SPAN = DEFAULT_FRAME_SIZE + 0x4000` (`4,163,584` B). If `self.video_pos <= MAX_FRAME_SPAN`, sets `self.video_pos = min(self.video_pos + length, MAX_FRAME_SPAN + 1)` (`4,163,585` B). | **Matches** saturation arithmetic (`4,163,585` B); however, the kernel function also copies up to `frame_size - p->video_pos` bytes into the `vb2` plane buffer (`memcpy`), whereas Python only updates `self.video_pos` and discards video bytes. |
 | **Short-Frame Neutral YUYV Black Tail Padding** | In `gc550_complete_video_frame()` (lines 173–179): when `done_buf` is present and `p->video_pos < frame_size` (within `[frame_size - 0x4000, frame_size - 1]`), fills `vbuf[p->video_pos .. frame_size - 1]` with `gc550_yuyv_black[i & 3]` (`{16, 128, 16, 128}`). | **Not implemented** in `StreamParser.complete_video_frame()` because `StreamParser` does not maintain a frame pixel buffer. | **Differs**: Kernel performs `{16, 128, 16, 128}` tail fill on `vb2` memory; Python model has no pixel buffer or tail-fill logic. |
 | **False-Prefix Flush in `VIDEO_DATA`** | In `gc550_parse_ordered_bytes()` (lines 329–331): calls `gc550_append_video_bytes(dev, prefix_bytes, p->marker_stage)` to copy the held-back `{0x00, 0xFF, 0xFF}` prefix bytes into `cur_buf` and advance `p->video_pos`. | In `parse_ordered_bytes()` (lines 436–437): calls `self.append_video_bytes(self.marker_stage)`, advancing `self.video_pos` by `1..3` without copying `prefix_bytes`. | **Differs**: Kernel writes actual `prefix_bytes` into `vb2` plane memory; Python only increments `video_pos`. |
-| **`frame_sequence` and Diagnostic Counters** | `struct gc550_stream_parser` has only `frame_sequence` (`u64`) and `desync_count` (`u32`). Crucially, `p->frame_sequence++` in `gc550_complete_video_frame()` (line 183) only executes inside `if (done_buf)` (i.e. when a queued V4L2 `gc550_buffer` was available). | `StreamParser` increments `self.frame_sequence += 1` unconditionally on every accepted frame (line 323) and adds 14 offline diagnostic counters/timestamps (`video_spans`, `rejected_video_spans`, `audio_pkt_sizes`, `audio_declared_sizes`, `invalid_audio_hdr_count`, `incomplete_audio_pkts`, `incomplete_audio_bytes`, `audio_bytes_total`, EAV window counters) plus `incomplete_audio_pkts` tracking in `reset()`. | **Differs**: Kernel `frame_sequence` depends on `done_buf != NULL` and `gc550_parser_reset()` does not track incomplete audio packets; Python increments `frame_sequence` without a buffer queue and tracks extra offline audio/video metrics. |
+| **`frame_sequence` and Diagnostic Counters** | `struct gc550_stream_parser` tracks `frame_sequence` and `current_frame_sequence` (`u64`). At every valid SAV boundary, `p->current_frame_sequence = p->frame_sequence++;` executes unconditionally in `gc550_reserve_video_frame()`, accurately advancing the sequence for dropped frames as required by V4L2. Completed and aborted buffers receive `p->current_frame_sequence` via `gc550_finish_buffer()`. | `StreamParser` increments `self.frame_sequence += 1` unconditionally on every accepted frame (line 323) and adds 14 offline diagnostic counters/timestamps (`video_spans`, `rejected_video_spans`, `audio_pkt_sizes`, `audio_declared_sizes`, `invalid_audio_hdr_count`, `incomplete_audio_pkts`, `incomplete_audio_bytes`, `audio_bytes_total`, EAV window counters) plus `incomplete_audio_pkts` tracking in `reset()`. | **Matches** frame interval counting across dropped frames. Python tracks additional offline metrics, while kernel attaches sequence numbers to `vb2` capture buffers. |
 | **Audio Payload Delivery** | `gc550_parse_ordered_bytes()` (line 281) calls `gc550_audio_push_samples(dev, &data[i], take)` to copy received audio payload bytes into the ALSA ring buffer (when an ALSA capture substream is active) and trigger `snd_pcm_period_elapsed()`. | `parse_ordered_bytes()` (lines 399–414) only increments `cur_audio_pkt_received`, `audio_bytes_total`, and `audio_bytes_since_first_eav` by `take`. | **Differs**: Kernel pushes audio payload bytes into ALSA `runtime->dma_area` when an ALSA capture substream is active; Python only counts bytes. |
 
 #### Scope of the Stage 4A-1 Offline Unit Tests (`TestStage4AProbeOffline`)
@@ -677,6 +677,72 @@ In [`kernel/gc550-audio.c`](../kernel/gc550-audio.c) (lines 21–37, 164–220),
 
 ---
 
+## H. V4L2 Buffer Lifecycle, Streaming Concurrency, and Compliance Verification (Phases E1.4–E1.5.2)
+
+### 1. Architectural Defects Identified & Corrected
+
+Hardware compliance testing on Titan revealed several subtle Videobuf2 lifecycle and parser synchronization defects that were addressed across Phases E1.4 through E1.5.2.2:
+
+1. **Frame-Boundary Buffer Reservation (`gc550_reserve_video_frame`)**:
+   - *Original Defect*: In early revisions, `gc550_append_video_bytes()` acquired queued buffers lazily if `dev->cur_buf` was NULL, even after `video_pos` had already advanced past 0. This allowed buffers queued mid-frame to attach to partial frames without receiving the start of the frame.
+   - *Invariant Implemented*: A video buffer may **only** be assigned to a frame at a valid `SAV` boundary when `video_pos == 0`. At each valid SAV marker, one buffer is acquired from `dev->buf_list` under `dev->queue_lock`. If none is available, the entire frame is dropped; no buffer is ever attached mid-frame.
+
+2. **Centralized Buffer Completion Helper (`gc550_finish_buffer`)**:
+   - *Original Defect*: Early revisions returned buffers with `vb2_buffer_done(..., VB2_BUF_STATE_ERROR)` on aborts without initializing `timestamp`, `sequence`, or `field`. When `v4l2-compliance -s 1` ran `testMmap()`, it dequeued an error buffer with timestamp zero, triggering an assertion failure (`v4l2-test-buffers.cpp:405: !g_timestamp().tv_sec && !g_timestamp().tv_usec`) and aborting without `STREAMOFF`, causing subsequent tests to cascade-fail with `EBUSY`.
+   - *Correction*: The centralized helper `gc550_finish_buffer(dev, buf, state)` consistently initializes:
+     - Monotonic nanosecond timestamp (`buf->vb.vb2_buf.timestamp = ktime_get_ns()`).
+     - Field format (`buf->vb.field = V4L2_FIELD_NONE`).
+     - Frame sequence (`buf->vb.sequence = p->current_frame_sequence`).
+     - Plane payload (`vb2_set_plane_payload()`).
+     - Videobuf2 completion (`vb2_buffer_done(&buf->vb.vb2_buf, state)`).
+
+3. **Frame-Interval Sequence Counting**:
+   - *Semantics*: V4L2 sequence numbers track received frame intervals, including frames dropped because userspace had no queued buffers.
+   - *Implementation*: `p->current_frame_sequence = p->frame_sequence++;` executes at every valid SAV boundary. If no buffer is available, `p->frame_sequence` still increments. Aborted frames retain the sequence assigned at their SAV boundary. `gc550_start_streaming()` resets sequences to 0, while mid-stream parser resyncs (`gc550_parser_reset()`) preserve sequence monotonicity.
+
+4. **Zero-Byte ERROR Payload Policy & VB2 Virtual Address Validation**:
+   - *Payload Policy*: If an incomplete frame aborts with `video_pos == 0`, reporting 0 bytes payload or leaving stale memory can fail compliance assertions. When `video_pos == 0`, `gc550_finish_buffer()` writes one 4-byte neutral black YUYV macro-pixel (`gc550_yuyv_black` = `{ 16, 128, 16, 128 }`) to plane 0 and sets payload to 4 bytes if `vbuf != NULL` (and 0 if NULL), satisfying compliance without full-frame memset overhead.
+   - *Address Validation*: In [`gc550_buf_prepare()`](../kernel/gc550-video.c), `vb2_plane_vaddr(vb, 0)` is validated at queue time; buffers without an accessible kernel virtual mapping are rejected immediately with `-EFAULT`.
+
+### 2. Titan Bare-Metal Hardware Verification (Phase E1.5.2)
+
+- **Test Platform**: Titan (AMD Ryzen 9 5900X, Radeon RX 9070 XT, Matisse xHCI controller `0000:06:00.1`, CachyOS Linux `7.3.3-1-cachyos`, x86_64).
+- **Module Build**: DKMS package `avermedia-gc550-dkms` (version `0.1.3`, PKCS#7 signed, compiled with Clang/LLVM and `W=1` with zero warnings/errors). Active module `srcversion: 27D8CAC60C62239C91B8BFC`.
+- **Non-Streaming V4L2 Compliance (`v4l2-compliance -d /dev/video2`)**:
+  - **48/48 passed, 0 failures, 0 warnings**.
+  - Verified: `VIDIOC_QUERYCAP`, priority, format enumeration, parameter queries, `VIDIOC_REQBUFS`, `CREATE_BUFS`, `VIDIOC_REMOVE_BUFS`, and `EXPBUF`.
+- **Full Streaming V4L2 Compliance (`v4l2-compliance -d /dev/video2 -s 1`)**:
+  - **57/57 passed, 0 failures, 0 warnings**.
+  - `test read/write`: OK
+  - `test MMAP (no poll, REQBUFS)`: OK
+  - `test MMAP (select, REQBUFS)`: OK
+  - `test MMAP (epoll, REQBUFS)`: OK
+  - `test MMAP (no poll, CREATE_BUFS)`: OK
+  - `test MMAP (select, CREATE_BUFS)`: OK
+  - `test MMAP (epoll, CREATE_BUFS)`: OK
+  - `test USERPTR (no poll)`: OK
+  - `test USERPTR (select)`: OK
+  - `test DMABUF`: Cannot test, specify `--expbuf-device` (pending).
+
+### 3. Verification Boundaries & Pending Work
+
+To maintain strict scientific and engineering rigor, verified findings are distinguished from unverified items:
+
+- **Verified on Hardware**:
+  - `CREATE_BUFS` dynamic buffer allocation and format compliance.
+  - Strict SAV-boundary frame reservation (no mid-frame buffer attachment).
+  - Monotonic nanosecond timestamping (`ktime_get_ns()`) for both DONE and ERROR completions.
+  - Correct sequence number advancement on dropped frames and preservation on aborted frames.
+  - Full streaming compliance across MMAP and USERPTR under poll, select, and epoll.
+- **Pending Follow-up Work (Not Claimed as Verified)**:
+  - Long-duration endurance testing under active V4L2 streaming.
+  - Compliance and capture verification across all five supported resolutions (`720p`, `576p`, `480p`, `640x480` in addition to `1080p`).
+  - Hot unplug/replug during active V4L2/USERPTR streaming.
+  - Simultaneous video streaming and ALSA audio capture stability under prolonged load.
+  - DMABUF streaming verification with an external exporting device (`--expbuf-device`).
+
+---
+
 ## G. Current Knowledge and Unresolved Questions
 
 The table below summarizes the established reverse-engineering findings, their evidence sources, their confidence classifications, and the remaining open questions for future kernel driver work.
@@ -696,3 +762,4 @@ The table below summarizes the established reverse-engineering findings, their e
 | **Programmed EDID (`0x36`) & `REP[0x77]` State in `gc550_init_blob`**: `steps 286..293` write the 256-byte `"ADI HDMI TV"` EDID (`0x91..0xA3` Audio Data Block, header `0x32`, LPCM SAD #1 `0f 7f 07` = 8-ch, `32..192 kHz`, `16/20/24-bit`, plus AC-3, DTS, E-AC-3, DTS-HD, TrueHD), then `steps 309..317` sequence `REP[0x77]` `01 -> 03 -> 07 -> 0F -> 00`. | [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h) lines 180–200, [`PROTOCOL.md`](../PROTOCOL.md) line 686. | `Confirmed` (bytes & `REP[0x77]=0x00` in `gc550_init_blob`) / `Unknown` (runtime DDC source) | The final `REP[0x77] = 0x00` write at `step 317` disables all four internal ADV7604 EDID ports (`bits 3:0`), and `steps 326..349` pulse the `PCA9539A` reset line a second time and rewrite `IO[0xF3..0xFE]` (`steps 351..373`) **without** rewriting `0x36` or `REP[0x77]`. What EDID the HDMI source actually receives on GC550 hardware is unresolved. |
 | **Audio Transport & Sample-Rate Handling (Phases B2, C1–C3, D1, D2.1, D2.2.7)**: Fixed `48 kHz` stereo `S16_LE` ALSA capture confirmed on Titan under both `48,000 Hz` (D2 Condition 1) and `44,100 Hz` (D2 Condition 2) HDMI input. ADV7604 correctly reports HDMI input rate (`IO[0x65]`, `HDMI[0x39]`). Audio continuity verified across 30-second captures (`0` anomalies `> 0.5 samples`). Signal converts from `44.1 kHz` to `48 kHz` upstream of host USB capture. Duplicate samples occur exclusively at turning-point apexes (`|s| >= 22,900 LSB`). | [`kernel/gc550-video.c`](../kernel/gc550-video.c), [`kernel/gc550-audio.c`](../kernel/gc550-audio.c), [`kernel/gc550-cmd.c`](../kernel/gc550-cmd.c), Titan hardware captures C1/C2, offline analysis script `verify_d2_audio.py`. | `Confirmed` (Fixed `48 kHz` `S16_LE` capture, ADV7604 rate decoding, transport continuity) / `Unknown` (Internal silicon conversion block) | Fixed `48 kHz` ALSA capture configuration confirmed permanent; dynamic rate switching is unnecessary. Exact internal silicon component and conversion location (`44.1 kHz -> 48 kHz`) remain `Unknown`. |
 | **Uncharacterized I2C Slaves (`0x4A`, `0x65`, `0x3F`) & FPGA (`0x10`) Registers**: Addressed in `gc550_init_blob` (`0x4A`: `125`W/`106`R; `0x65`: `4`W; `0x3F`: `8`×32B R; `0x10`: `18`W/`6`R). | [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h), [`PROTOCOL.md`](../PROTOCOL.md) lines 579–581. | `Confirmed` (I2C transactions) / `Unknown` (IC identities & register maps) | Exact IC part numbers and register definitions of `0x4A`, `0x65`, and `0x3F`, as well as the internal register map of the Lattice ECP3 FPGA (`0x10`), remain `Unknown`. |
+| **V4L2 Streaming Compliance & Buffer Lifecycle (Phases E1.4–E1.5.2)**: 100% compliance pass (57/57 streaming, 48/48 non-streaming, 0 failures, 0 warnings) on Titan (`7.3.3-1-cachyos`, `srcversion: 27D8CAC60C62239C91B8BFC`). Buffers reserve strictly at SAV boundary; centralized `gc550_finish_buffer()` provides monotonic timestamps and sequence intervals; `gc550_buf_prepare()` validates virtual addresses. | `v4l2-compliance 1.32.0` on Titan bare-metal hardware, [`kernel/gc550-video.c`](../kernel/gc550-video.c). | `Confirmed` (for 1080p MMAP, USERPTR, select, epoll) | Endurance testing, non-1080p resolutions, simultaneous audio+video stress, and DMABUF export (`--expbuf-device`) remain pending. |

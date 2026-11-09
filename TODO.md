@@ -22,6 +22,11 @@ This file tracks planned features, technical design notes, and future experiment
 - [x] Collect a real-GC550 SAV→EAV span histogram across sustained 1080p60 capture and a physical reconnect on Niri (CachyOS `7.3.1-1`). Before reconnect, all 28,189 candidates fell in the `4,147,200..4,147,455` byte bin. After reconnect, 27,465 of 27,466 candidates fell in that bin; one was below the `4,130,816` byte acceptance limit and was rejected. Both sessions ended with zero desyncs. No accepted short span was observed, so the neutral-tail fill was not exercised. Keep the protocol-derived ±16 KiB acceptance window.
 - [ ] In a disposable VM or USB test setup, exercise command replies with exact, short, oversized, and absent payloads and verify each fails or succeeds with the expected error. Do not use the daily-use laptop for fault injection.
 - [ ] Recheck parser callback serialization on each newly supported HCD/kernel combination. Niri's CachyOS 7.3.1-1 xHCI trace is documented in [`CONTRIBUTING.md`](CONTRIBUTING.md), but generic USB completion ordering is not guaranteed across all HCDs.
+- [ ] Long-duration endurance testing under active V4L2 streaming.
+- [ ] Compliance and capture testing across all five supported resolutions (720p, 576p, 480p, 640x480 beyond 1080p).
+- [ ] Hot unplug/replug verification under active streaming.
+- [ ] Simultaneous video streaming and ALSA audio capture stability under load.
+- [ ] DMABUF streaming verification with `--expbuf-device`.
 
 ---
 
@@ -93,8 +98,15 @@ Target subsystem: **Linux Media Subsystem (`linux-media@vger.kernel.org`)**, mai
 
 - [ ] **1. License Coordination (`GPL-3.0` → `GPL-2.0-or-later`)**:
   - The mainline Linux kernel requires `GPL-2.0` compatibility. Coordinate with upstream author **Chris Sawczuk ([@ChrisAJS](https://github.com/ChrisAJS))** to dual-license/re-license the reverse-engineered GC550 hardware initialization tables under `GPL-2.0-or-later` and invite him to co-sign (`Signed-off-by` / `Co-developed-by`) the upstream patch series.
-- [ ] **2. Pass `v4l2-compliance -s` with Zero Failures**:
-  - Run `v4l2-compliance -s -d /dev/avermedia-gc550` (from `v4l-utils`) against the current driver (with the `v0.1.1` `struct kref` / `v4l2_dev.release` lifecycle fix in place) and resolve any flagged V4L2 ioctl edge cases (including frame-interval reporting and timing-change behavior).
+- [x] **2. Pass `v4l2-compliance -s` with Zero Failures**:
+  - Verified on Titan (`7.3.3-1-cachyos`, Clang/LLVM `W=1`, `srcversion: 27D8CAC60C62239C91B8BFC`):
+    - Non-streaming: `48/48` succeeded (`0` failures).
+    - Streaming (`-s 1`): `57/57` succeeded (`0` failures, `0` warnings).
+    - Passed: `read/write`, `MMAP (no poll / select / epoll, REQBUFS & CREATE_BUFS)`, `USERPTR (no poll & select)`.
+    - DMABUF was not tested because no `--expbuf-device` was specified.
+    - Centralized buffer completion helper (`gc550_finish_buffer`) ensures monotonic timestamps (`ktime_get_ns()`) and frame sequence numbering across both DONE and ERROR states.
+    - Buffer reservation locked to SAV boundary (`video_pos == 0`); mid-frame buffer attachment eliminated.
+    - Validated `vb2_plane_vaddr` check in `gc550_buf_prepare()`.
 - [ ] **3. Trim Redundant Polling Loops from `gc550-regtables.h`**:
   - As documented in [`PROTOCOL.md`](PROTOCOL.md), only the first ~1,730 steps of the 6,576-command capture are actual chip initialization; the remaining ~4,800 steps are repeated status-poll reads from the Windows USB capture. Trimming the redundant polling reads will reduce [`kernel/gc550-regtables.h`](kernel/gc550-regtables.h) by ~75% and cut cold bootstrap time from `~3.3 s` to **`< 0.9 s`**.
 - [ ] **4. Pass `scripts/checkpatch.pl --strict`**:
