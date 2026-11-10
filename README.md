@@ -234,4 +234,4 @@ If you are on **Windows**, **macOS**, or want the **userspace driver (`lgx2users
 
 ## License
 
-Licensed under the **GNU General Public License v3.0** ([`LICENCE.md`](LICENCE.md)).
+Currently licensed under the **MIT License** ([`LICENCE.md`](LICENCE.md)).
