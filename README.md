@@ -18,6 +18,26 @@ A: Think of the `2` as **"to"** — **`LGX-to-KernelLevel`** (playing off upstre
 
 ---
 
+## Verified Baseline & Hardware Test Environment
+
+The active verified baseline for this driver is **Phase E1.5.2.2 / E1.6**:
+- **Baseline Git Commit**: `8744e8628d2822e2419f5326795bf046d2e94160` (branch `main`)
+- **Module `srcversion`**: `27D8CAC60C62239C91B8BFC`
+- **Module SHA256**: `b795b207d573eaadbe23f553d25dca40a29ba5d03898b148d38c689fffa7bb97`
+- **Primary Test Platform (`Titan`)**: Bare-metal AMD Ryzen 9 5900X (12C/24T), Radeon RX 9070 XT, 32 GB DDR4, CachyOS kernel `7.3.3-1-cachyos` (x86_64), Clang/LLVM 19.
+- **Secondary Test Platform (`Niri`)**: Bare-metal Intel Core i7 laptop, CachyOS kernel `7.3.1-1-cachyos` (x86_64), Clang/LLVM 19.
+- **V4L2 Compliance (`v4l2-compliance 1.32.0`)**:
+  - Non-streaming tests: **48 passed**, 0 failed.
+  - Streaming tests (MMAP, USERPTR): **57 passed**, 0 failed, 0 warnings.
+  - DMABUF export (`--expbuf-device`): **Unverified**.
+- **Phase E1.6 Hardware Test Results (Titan)**:
+  - **30-Minute Endurance Capture (TE-01)**: **108,000 frames dequeued**, 108,001 driver-observed, 0 dropped, 0 mid-stream desyncs over 1,799.985 s at 60.001 fps (345,598,308 audio bytes parsed).
+  - **Multi-Resolution Functional Checks (TR-01..TR-05)**: Short functional smoke tests across all five supported resolutions (1080p60 [300 frames], 720p60 [62 frames], 576p50 [51 frames], 480p60 [60 frames], 640x480p60 [62 frames]) with dynamically matched Raspberry Pi HDMI source modes; all captured cleanly without mid-stream errors (the four shorter captures are functional smoke tests, not full 300-frame endurance tests).
+  - **Simultaneous Video & Audio Capture (TS-01)**: 1,800 video frames and 5,750,784 PCM bytes over 30.0 seconds, demonstrating **99.84% audio/video duration correspondence** during simultaneous capture (measures duration alignment; lip-sync / AV sync accuracy has not been independently measured).
+  - **Physical Hot-Unplug / Reconnect**: **NOT TESTED** under active streaming (software interface unbind/bind evaluated; physical cable unplug during active streaming remains unverified).
+
+---
+
 ## Hardware Compatibility Matrix
 
 | Device Model | USB ID (`VID:PID`) | Driver Status | Notes |
@@ -92,7 +112,9 @@ The project target is **no more than `50 ms` end-to-end glass-to-glass latency**
 3. **Audio Requires Active Video Capture:** Because the GC550 hardware multiplexes HDMI audio packets (`00 FF FF 58`) inside the USB 3.0 video bulk stream (`EP 0x83 IN`), `/dev/videoX` must be actively streaming (e.g. open in OBS) for audio samples to flow into the ALSA capture device.
 4. **Manual Resolution Selection and Frame-Rate Reporting:** The driver exposes five discrete `YUYV` sizes, but does not automatically change the V4L2 format when HDMI timing changes. Set the OBS/V4L2 source size to match the input. Frame-interval enumeration currently reports 60 fps for all sizes; a `576p50` input was observed at about 50 fps, so frame-rate reporting needs follow-up work.
 5. **Cold Bootstrap Delay (~3.3 Seconds):** The very first time `/dev/videoX` is opened after plugging in the USB cable, the driver sends 6,576 I2C setup commands over USB (~3.3 seconds). Subsequent opens skip the bootstrap and start instantaneously.
-6. **USB Hot-Unplug (`v0.1.1`):** Device lifetime is retained across open V4L2 and ALSA handles, and stream URBs are stopped before their resources are released. Hot-unplug during active OBS video and audio capture was verified on Niri (bare-metal CachyOS `7.3.1-1-cachyos`) with `29,629` frames (`v0.1.1`) and `17,227` frames (`v0.1.2`), `0` desyncs, and no kernel faults. Reopen or reselect the capture devices after reconnecting the USB cable.
+6. **USB Hot-Unplug Testing Status:** Device lifetime is retained across open V4L2 and ALSA handles, and stream URBs are stopped before their resources are released. Software interface unbind/bind was evaluated, but physical cable hot-unplug during active video streaming remains unverified on the Titan hardware baseline. Reopen or reselect the capture devices after reconnecting the USB cable.
+7. **Warm Stream Restart & Swap-State Trapping:** The driver retains `swap_mode` across STREAMOFF. Under rapid stream stop/start cycles (e.g. Phase E1.7 testing), if incoming 16 KiB blocks arrive out-of-phase, the driver's pair accumulation grid is unanchored to SAV headers and the detector cannot toggle back from SWAPPED to NORMAL on full frames, leading to desynchronization storms until the driver is rebound. This behavior was investigated in Phase E1.8, with diagnostic verification planned for Phase E1.9.
+8. **Not Upstream-Ready Yet:** This driver is under active development and is **not ready for mainline Linux kernel upstream submission**. It requires further correctness hardening (SAV-anchored block pairing), multi-resolution phase drift validation, portability testing across non-xHCI host controllers, licensing review, and full media-subsystem API/checkpatch review.
 
 ---
 

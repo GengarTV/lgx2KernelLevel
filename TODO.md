@@ -22,11 +22,72 @@ This file tracks planned features, technical design notes, and future experiment
 - [x] Collect a real-GC550 SAV→EAV span histogram across sustained 1080p60 capture and a physical reconnect on Niri (CachyOS `7.3.1-1`). Before reconnect, all 28,189 candidates fell in the `4,147,200..4,147,455` byte bin. After reconnect, 27,465 of 27,466 candidates fell in that bin; one was below the `4,130,816` byte acceptance limit and was rejected. Both sessions ended with zero desyncs. No accepted short span was observed, so the neutral-tail fill was not exercised. Keep the protocol-derived ±16 KiB acceptance window.
 - [ ] In a disposable VM or USB test setup, exercise command replies with exact, short, oversized, and absent payloads and verify each fails or succeeds with the expected error. Do not use the daily-use laptop for fault injection.
 - [ ] Recheck parser callback serialization on each newly supported HCD/kernel combination. Niri's CachyOS 7.3.1-1 xHCI trace is documented in [`CONTRIBUTING.md`](CONTRIBUTING.md), but generic USB completion ordering is not guaranteed across all HCDs.
-- [ ] Long-duration endurance testing under active V4L2 streaming.
-- [ ] Compliance and capture testing across all five supported resolutions (720p, 576p, 480p, 640x480 beyond 1080p).
-- [ ] Hot unplug/replug verification under active streaming.
-- [ ] Simultaneous video streaming and ALSA audio capture stability under load.
+- [x] Long-duration endurance testing under active V4L2 streaming (Phase E1.6 TE-01 verified on Titan: 108,000 frames dequeued, 108,001 driver-observed, 0 dropped, 0 mid-stream desyncs over 1,799.985 s at 60.001 fps, 345,598,308 audio bytes parsed).
+- [x] Multi-resolution functional checks across all five supported resolutions (Phase E1.6 TR-01 to TR-05 short functional smoke tests verified on Titan: 1080p60 [300 frames], 720p60 [62 frames], 576p50 [51 frames], 480p60 [60 frames], 640x480p60 [62 frames] with dynamically matched Raspberry Pi HDMI source modes; all demonstrated successful short captures without mid-stream errors, though four did not meet the planned 300-frame test duration).
+- [ ] Hot unplug/replug verification under active streaming (Phase E1.6 TH-01/TH-02 marked NOT TESTED for physical cable disconnect/reconnect; software interface unbind/bind was observed instead).
+- [x] Simultaneous video streaming and ALSA audio capture stability under load (Phase E1.6 TS-01 verified on Titan: 30-second continuous 1080p60 capture with 1,800 video frames and 5,750,784 PCM bytes at 48 kHz stereo [~29.952 s], demonstrating 99.84% audio/video duration correspondence during simultaneous capture without independent lip-sync measurement).
 - [ ] DMABUF streaming verification with `--expbuf-device`.
+
+---
+
+## Swap-State Lifecycle Experiments & Investigation
+
+### Phase E1.7 – Unconditional STREAMON Swap Reset (Tested & Rejected)
+- [x] **Unconditional `swap_mode` Reset at STREAMON (`swap_mode = false; swap_votes = 0;`) — REJECTED**:
+  - **Implementation**: Added 2-line initialization in `gc550_start_streaming()` on experimental module (`srcversion: A68A3199829648981D6FDB3`).
+  - **RG-01 (Cold STREAMON)**: Passed. 120 frames at 60.02 fps, 2 initial desyncs, detected SWAPPED mode cleanly.
+  - **RG-02 (10 Consecutive STREAMOFF/STREAMON Cycles)**: Failed on Cycle 2 (started 550 ms after Cycle 1). Userspace `v4l2-ctl` blocked in DQBUF and dequeued 0 frames; parser accumulated 5,433 desyncs over ~98 seconds (`frames=64, audio_bytes=204796, desyncs=5433, swap_mode=1`).
+  - **Halted Tests**: RG-03, RG-04, and RG-05 were not run due to early termination on RG-02 failure.
+  - **Rollback**: Reverted to verified E1.5.2.2 baseline (`srcversion: 27D8CAC60C62239C91B8BFC`, commit `8744e86`).
+  - **Status**: The unconditional STREAMON reset approach is tested and rejected.
+
+### Phase E1.8 – FX3 DMA Socket Alignment and Stream Framing Investigation — COMPLETE
+- [x] **Read-Only Audit of FX3 DMA Socket Alignment, Upstream BufferReorderer, and Stream Framing**:
+  - **STREAMON/STREAMOFF State**: Confirmed driver-side reset scope at STREAMON (`state`, `hdr_pos`, `video_pos`, `marker_stage`, `pair_pos` reset; `swap_mode`, `swap_votes`, `desync_count` retained); confirmed driver issues no hardware stop/reset/flush commands at STREAMOFF. Actual FX3 hardware state and FIFO occupancy across pause classified as `Unknown`.
+  - **Pairing Grid Anchoring**: Confirmed driver pair accumulation starts at host URB byte 0 without SAV anchoring, making it vulnerable to shifted stream boundaries.
+  - **Mid-URB State Transitions**: Confirmed that `swap_mode` toggles mid-loop in `gc550_complete_video_frame()`, while `gc550_parse_ordered_bytes()` continues processing the remainder of the 512 KiB URB unswapped, without downstream gap/reset signaling.
+  - **Asymmetric Detector Trap**: Confirmed that the two-vote detector cannot toggle `SWAPPED -> NORMAL` on a normal-order stream because normal spans (~4.15 MB) unconditionally clear `swap_votes = 0`.
+  - **Upstream Reference Audit (`ChrisAJS/lgx2userspace`)**: Confirmed upstream `BufferReorderer` explicitly anchors the 32 KiB pair grid to `observation.savOffset`, drops leading unaligned bytes, detects normal order via a 32 KiB lookahead window, transitions bidirectionally, and passes `gapped = true` to `FrameBuilder`.
+  - **FrameBuilder Arming Discrepancy**: Confirmed upstream code arms (`_armed = true`) on valid checksum alone, treating `c[0] != _savB0` as a soft mismatch, whereas the header comment claims matching sequence bytes are required.
+  - **Multi-Resolution Compatibility & Phase Drift**: Confirmed 1080p has an even number of 16 KiB blocks per frame (254 blocks). Established that if lower resolutions (720p, 576p, 480p, 640x480) have odd block periods, SAV alternates between Block 0 and Block 1 on alternating frames, causing phase drift that breaks upstream's `(savOffset - pairOrigin) % 32768 == 0` check.
+  - **Phase E1.9 Passive Diagnostic Specification**: Designed a non-intrusive, zero-overhead 64-entry pre-allocated diagnostic ring buffer dumped at STREAMOFF to capture first URB completion length and initial SAV byte offset without runtime jitter.
+
+---
+
+## Work Status & Activity Classification
+
+### 1. Completed & Verified Work (E1.5.2.2 Baseline)
+- [x] V4L2 streaming compliance: 57 passed, 0 failed, 0 warnings (`v4l2-compliance 1.32.0`).
+- [x] V4L2 non-streaming compliance: 48 passed, 0 failed.
+- [x] 30-minute endurance testing at 1080p60 (Phase E1.6 TE-01: 108,000 frames dequeued, 0 dropped, 0 mid-stream desyncs over 1,800 s at 60.001 fps).
+- [x] Fixed 48 kHz stereo ALSA audio transport under 48 kHz and 44.1 kHz HDMI input.
+- [x] CryptoMemory anti-clone replay omitted; opcodes 0x05, 0x06, 0x07, 0x09 filtered with `-EPERM`.
+- [x] V4L2 and ALSA multi-device kref release lifecycle preventing hot-unplug use-after-free.
+
+### 2. Completed but Partially Tested Work
+- [x] Multi-resolution functional checks (Phase E1.6 TR-01 to TR-05: short functional smoke tests verified on hardware across 1080p60 [300 frames], 720p60 [62 frames], 576p50 [51 frames], 480p60 [60 frames], 640x480p60 [62 frames]; all captured cleanly without mid-stream errors, but four modes did not run for a full 300-frame validation duration).
+- [x] Simultaneous video and audio capture stability (Phase E1.6 TS-01: 1,800 video frames and 5,750,784 PCM bytes over 30 seconds, demonstrating 99.84% duration correspondence during simultaneous capture without independent lip-sync measurement).
+
+### 3. Known Defects & Parser Limitations
+- [ ] **Warm Restart Swap-State Trap**: `swap_mode` is retained across STREAMOFF. Rapid stream restart can trap the detector or cause desynchronization storms (observed in Phase E1.7 RG-02 Cycle 2: 5,433 desyncs, 0 dequeued frames).
+- [ ] **Mid-URB Toggle Without Framing Reset**: Toggling `swap_mode` while an URB is active continues parsing remainder unswapped and provides no gap notification to vb2 queue.
+- [ ] **Unanchored Pairing Grid**: `gc550_parse_stream_chunk()` assumes byte 0 of host URB is Block 0 offset 0; no SAV-anchoring exists.
+- [ ] **Frame-Interval Reporting**: Driver currently reports 60 fps for all resolutions in V4L2 enum; a 576p50 signal streams at ~50 fps.
+
+### 4. Unverified Functionality (Open)
+- [ ] **Physical Hot-Unplug / Reconnect Testing**: Physical cable disconnect/reconnect under active streaming remains **NOT TESTED** (only software unbind/bind evaluated in E1.6).
+- [ ] **DMABUF Streaming**: Verification with `v4l2-ctl --expbuf-device` remains unverified.
+- [ ] **Multi-Resolution Sustained Endurance**: Long-duration (>30 minute) endurance capture at 720p, 576p, 480p, and 640x480 has not been executed.
+
+### 5. Future Investigation (Phase E1.9)
+- [ ] Implement and execute the Phase E1.9 passive diagnostic instrumentation to capture the first URB completion length (`actual_length`) and initial SAV byte offset on rapid stream restart (Cycle 1 vs Cycle 2).
+- [ ] Determine whether Cypress FX3 Bulk IN EP 0x83 FIFO can be safely flushed via `usb_clear_halt()` at STREAMOFF.
+- [ ] Measure total frame periods (in 16 KiB blocks) for 720p, 576p, 480p, and 640x480 to verify DMA block parity.
+
+### 6. Potential Upstream-Readiness Work
+- [ ] Evaluate minimal cold-bootstrap subset reduction (streamlining 6,576 steps to remove redundant status polls).
+- [ ] Dynamic frame interval detection based on ADV7604 TMDS / vertical frequency measurements.
+- [ ] Full Linux Media Subsystem checkpatch and API compliance review.
 
 ---
 

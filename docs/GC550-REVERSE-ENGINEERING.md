@@ -734,12 +734,121 @@ To maintain strict scientific and engineering rigor, verified findings are disti
   - Monotonic nanosecond timestamping (`ktime_get_ns()`) for both DONE and ERROR completions.
   - Correct sequence number advancement on dropped frames and preservation on aborted frames.
   - Full streaming compliance across MMAP and USERPTR under poll, select, and epoll.
+  - Long-duration 30-minute endurance capture (Phase E1.6 TE-01 on Titan: 108,000 frames dequeued, 108,001 driver-observed, 0 dropped frames, 0 mid-stream desyncs over 1,799.985 s at 60.001 fps, 345,598,308 audio bytes parsed).
+  - Multi-resolution functional smoke tests (Phase E1.6 TR-01 to TR-05 on Titan: 1080p60 [300 frames], 720p60 [62 frames], 576p50 [51 frames], 480p60 [60 frames], 640x480p60 [62 frames] verified with dynamically matched Raspberry Pi HDMI source modes; all five modes demonstrated successful short captures without mid-stream errors, though four did not meet the originally planned 300-frame test duration).
+  - Simultaneous video streaming and ALSA audio capture stability (Phase E1.6 TS-01 on Titan: 30-second continuous capture, 1,800 video frames at 60.00 fps, 5,750,784 PCM bytes at 48 kHz stereo [~29.952 s], demonstrating 99.84% audio/video duration correspondence during simultaneous capture without independent lip-sync measurement).
 - **Pending Follow-up Work (Not Claimed as Verified)**:
-  - Long-duration endurance testing under active V4L2 streaming.
-  - Compliance and capture verification across all five supported resolutions (`720p`, `576p`, `480p`, `640x480` in addition to `1080p`).
-  - Hot unplug/replug during active V4L2/USERPTR streaming.
-  - Simultaneous video streaming and ALSA audio capture stability under prolonged load.
+  - Hot unplug/replug during active V4L2/ALSA streaming on hardware (Phase E1.6 TH-01/TH-02 marked NOT TESTED for physical cable disconnect/reconnect; software interface unbind/bind was evaluated instead).
   - DMABUF streaming verification with an external exporting device (`--expbuf-device`).
+
+---
+
+## I. Stream Parser Swap Lifecycle & Phase E1.7 Investigation
+
+### 1. Context and Problem Statement
+During multi-resolution testing and warm stream restarts, the driver parser exhibited a state where every incoming frame triggered parser desynchronization (`desync_count++`). In one transition, `2,074` frames resulted in `2,077` desynchronization events, preventing valid buffer delivery to userspace until the driver interface was rebound.
+
+Source code audit identified that `dev->parser.swap_mode` and `dev->parser.swap_votes` are initialized only once during driver probe (`kzalloc()`). When a stream stops with `swap_mode == 1`, that state is retained across STREAMOFF. If a subsequent stream starts while the incoming hardware block order is in normal order, the driver un-swaps normal 16 KiB blocks, corrupting SAV/EAV boundaries. Because full frames are assembled (`video_pos > GC550_SWAP_SPAN_LIMIT`), the two-vote detector unconditionally resets `swap_votes = 0`, creating an asymmetric one-way condition where `swap_mode` cannot toggle back to 0.
+
+### 2. Phase E1.7 Implementation (Tested & Rejected)
+To test whether resetting swap state at stream startup resolves this issue, an experimental change was implemented in [`gc550_start_streaming()`](../kernel/gc550-video.c):
+
+```c
+dev->parser.swap_mode = false;
+dev->parser.swap_votes = 0;
+```
+
+- **Experimental Module**: Compiled with Clang/LLVM `W=1` on Titan (`7.3.3-1-cachyos`, x86_64), producing active experimental module `srcversion: A68A3199829648981D6FDB3`.
+- **Test RG-01 (Cold STREAMON)**: **Passed**. 120 frames captured at 60.02 fps; dmesg logged initial `swap_mode=0`, detected `FX3 16 KiB DMA buffer order switched to SWAPPED` at frame 2, and finished with exactly 2 initial detection desyncs and 0 subsequent desyncs (`frames=124, audio_bytes=396792, desyncs=2, swap_mode=1`).
+- **Test RG-02 (Consecutive STREAMOFF/STREAMON Cycles)**: **Failed on Cycle 2**.
+  - Cycle 1 completed cleanly (60 frames captured, `frames=64, audio_bytes=204800, desyncs=4, swap_mode=1`).
+  - Cycle 2 (initiated 550 ms after Cycle 1 completed) started at `[26802.100070]`. At `[26802.124571]` (24 ms later), the driver logged `FX3 16 KiB DMA buffer order switched to SWAPPED`.
+  - However, userspace `v4l2-ctl` blocked in `VIDIOC_DQBUF` and dequeued **zero frames**.
+  - When interrupted after ~98 seconds, the kernel reported:
+    `Stream stopped: frames=64, audio_bytes=204796, desyncs=5433, swap_mode=1`.
+  - In ~98 seconds, only 64 SAV markers were recognized (`frames=64`), approximately 204,796 audio bytes were parsed, and 5,433 desynchronization events were logged.
+- **Halted Tests**: Tests RG-03, RG-04, and RG-05 were not run due to early termination on RG-02 failure.
+- **Rollback**: Restored verified E1.5.2.2 module from backup (`/home/gengartv/gc550_backup_e1.5.2/gc550.ko.zst`, SHA256 `b795b207d573eaadbe23f553d25dca40a29ba5d03898b148d38c689fffa7bb97`, `srcversion: 27D8CAC60C62239C91B8BFC`, git commit `8744e86`). Verified device availability on `/dev/video2` and ALSA card 2.
+- **Conclusion**: The unconditional STREAMON reset approach is **tested and rejected**.
+
+### 3. Established Facts vs. Unproven Hypotheses
+
+To maintain documentation integrity, observed measurements are strictly separated from hypotheses:
+
+- **Confirmed Observations**:
+  1. Resetting `swap_mode = false` at STREAMON caused rapid consecutive streaming restarts (Cycle 2, 550 ms after Cycle 1) to fail completely with 0 dequeued frames, 64 SAV frames parsed, ~204,796 audio bytes, and 5,433 desynchronization events.
+  2. The two-vote detector logged `FX3 16 KiB DMA buffer order switched to SWAPPED` 24 ms after Cycle 2 started, yet frame assembly failed.
+  3. Under the baseline E1.5.2.2 module (`27D8CAC60C62239C91B8BFC`), long-duration streaming (108,000 frames / 30 minutes) runs with zero desyncs and zero frame drops once synchronized.
+- **Unproven Hypotheses**:
+  1. *FX3 DMA socket state persistence*: The hypothesis that Cypress FX3 DMA socket phase or FIFO alignment persists across STREAMOFF/STREAMON on warm restarts is a plausible hypothesis, but is **not a confirmed explanation**.
+  2. *Hardware delivered frame count*: The estimate of ~5,880 hardware frames delivered during the 98-second failure was a theoretical calculation ($98 \text{ s} \times 60 \text{ fps}$), **not a measured fact**. The only measured values are `frames=64` (SAV markers recognized), `audio_bytes=204796`, and `desyncs=5433`.
+
+### 4. Phase E1.8 Technical Investigation Findings
+
+Following the failure of Phase E1.7, a strictly read-only technical investigation was performed across [`kernel/gc550-video.c`](../kernel/gc550-video.c), [`kernel/gc550.h`](../kernel/gc550.h), [`kernel/gc550-core.c`](../kernel/gc550-core.c), and the upstream reference implementation [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) (`src/liblgx/src/BufferReorderer.{h,cpp}`, `FrameBuilder.{h,cpp}` at commit `908a1ce3`).
+
+#### A. Stream Lifecycle and State Persistence
+1. **STREAMON Reset Scope**: [`gc550_parser_reset()`](../kernel/gc550-video.c) resets `state = IDLE`, `sav_b0 = 0`, `hdr_pos = 0`, `audio_rem = 0`, `video_pos = 0`, `marker_stage = 0`, and `pair_pos = 0`. Stream counters (`frame_sequence`, `current_frame_sequence`, `audio_bytes`) are zeroed in `gc550_start_streaming()`.
+2. **Persistent State Across Streams**: In the verified E1.5.2.2 baseline, `swap_mode`, `swap_votes`, and `desync_count` are **never reset at STREAMON or STREAMOFF** (`Confirmed`). They survive across streaming sessions and persist until module unload.
+3. **Buffer Allocation Lifecycle**: `pair_buf` (32 KiB) is dynamically allocated at STREAMON (`kmalloc`) and freed at STREAMOFF (`kfree`). All four 512 KiB streaming URBs are allocated and submitted at STREAMON, and killed (`usb_kill_urb`) and freed at STREAMOFF.
+4. **Driver-Side STREAMOFF Inaction**: [`gc550_stop_stream_resources()`](../kernel/gc550-video.c) issues **no explicit FX3 stop, DMA reset, or endpoint FIFO flush command** (`Confirmed`). Whether the FX3 continues acquiring data, retains committed DMA buffers, or preserves socket phase across the pause remains `Unknown` without bus-level capture.
+
+#### B. 16 KiB Pairing Grid and Mid-URB Mode Transitions
+1. **Unanchored Pairing Grid**: In `gc550_parse_stream_chunk()`, when `swap_mode == true`, incoming bytes are accumulated into `pair_buf` starting at index `pair_pos = 0`. The driver makes an implicit assumption that byte 0 of the first URB received after STREAMON is byte 0 of an even 16 KiB DMA block (`Confirmed`). The kernel driver possesses **no alignment mechanism** to synchronize `pair_pos` with physical 16 KiB DMA blocks or SAV frame markers.
+2. **Mid-URB State Transition**: When the two-vote detector confirms an order switch (`swap_votes >= 2`) inside `gc550_complete_video_frame()`, line 230 toggles `p->swap_mode = !p->swap_mode;` and zeroes `p->pair_pos = 0;`. This occurs deep inside the byte-by-byte loop of `gc550_parse_ordered_bytes()`.
+   - **Crucial Finding**: `gc550_parse_ordered_bytes()` continues executing for the **remainder of that active 512 KiB URB** (`Confirmed`). The remaining ~476 KiB of that URB are parsed directly without 32 KiB pair accumulation or swapping.
+   - Only upon arrival of the *subsequent* URB does `gc550_parse_stream_chunk()` accumulate into `pair_buf`.
+3. **Absence of Downstream Reset**: The kernel driver issues no downstream framing reset or gap notification when `swap_mode` toggles (`Confirmed`). In-flight marker prefixes (`marker_stage`) and active frame states continue uninterrupted.
+
+#### C. Upstream Reference Implementation Comparison (`ChrisAJS/lgx2userspace`)
+A detailed source audit of `ChrisAJS/lgx2userspace` (`BufferReorderer` and `FrameBuilder`) revealed fundamental architectural differences:
+
+| Architectural Feature | Upstream Reference (`ChrisAJS/lgx2userspace`) | Kernel Driver (`lgx2KernelLevel`) | Evidence Level |
+|---|---|---|---|
+| **Pipeline Separation** | Decoupled 2-stage pipeline: `BufferReorderer` (stream reordering) $\to$ `FrameBuilder` (frame parsing). | Monolithic byte-stream parser with inline pair accumulator (`gc550_parse_stream_chunk`). | `Confirmed` |
+| **Grid Anchoring** | **Explicitly anchored to SAV offset**: `_pairOrigin = observation.savOffset` (`BufferReorderer.cpp:120`). | **Unanchored**: Assumes byte 0 of host URB is Block 0 offset 0 (`pair_pos = 0`). | `Confirmed` |
+| **Startup Leading Bytes** | **Dropped**: All bytes prior to the first decided SAV are discarded (`_outOffset = end` in `Order::Unknown`). | **Parsed**: All bytes from URB 0 byte 0 are parsed directly into the state machine. | `Confirmed` |
+| **Normal-Order Detection** | **Proactive timer/window**: If 32 KiB elapses after SAV without an EAV, `Order::Normal` is confirmed. | **None**: Assumes normal mode until an error/swap condition triggers. | `Confirmed` |
+| **Bidirectional Recovery** | **Full**: Transitions `Normal -> Swapped` and `Swapped -> Normal` using 2-SAV agreeing candidate logic. | **One-way trap**: Cannot transition `Swapped -> Normal` because normal spans ($> 32$ KiB) zero votes. | `Confirmed` |
+| **Order Transition Boundary** | **Strictly at SAV boundary**: Applied only when emit offset equals deciding SAV offset. | **Mid-URB**: Applied immediately inside `complete_video_frame`; remainder of URB parsed unswapped. | `Confirmed` |
+| **Downstream Resync on Order Change** | **Explicit gap notification**: Downstream `FrameBuilder` resets state, clears carry, and disarms (`resetForGap`). | **None**: Parser state machine continues running inline without carry/straddle reset. | `Confirmed` |
+| **FrameBuilder Re-Arming Discrepancy** | Header comment claims clean SAV/EAV with matching `c0 == b0` required; code actually arms (`_armed = true`) on valid checksum alone and treats `c[0] != _savB0` as soft mismatch (`FrameBuilder.cpp:152`). | Driver immediately aborts vb2 buffer with `VB2_BUF_STATE_ERROR` on `c0 != b0` when span $\le 32$ KiB. | `Confirmed` |
+
+#### D. Multi-Resolution Compatibility and Phase Drift Risks
+1. **Upstream Invariant**: `BufferReorderer.h` explicitly assumes an even number of 16 KiB DMA blocks per frame period (1080p: 254 blocks). In `BufferReorderer::agrees()`, upstream enforces `(observation.savOffset - pairOrigin) % PAIR_BYTES == 0`.
+2. **Analysis for Supported Resolutions**:
+   - **1080p** ($1920 \times 1080$): Padded period is $4,161,536\text{ B} = 254 \times 16,384\text{ B} = 127 \text{ pairs}$ (EVEN). Phase drift is zero.
+   - **720p, 576p, 480p, 640x480**: Video payloads are not integer multiples of 32 KiB ($112.5$, $50.625$, $42.1875$, and $37.5$ blocks). Whether the FX3 pads these modes to an **even** or **odd** number of 16 KiB blocks is unmeasured on hardware (`Unknown`).
+3. **Phase Drift Consequence**: If a resolution has an odd number of 16 KiB blocks per frame period ($2k+1$), the SAV marker will alternate between Block 0 and Block 1 on every single frame. A naive port of upstream's SAV-grid agreement check would conclude that phase moved on every frame, causing continuous pipeline resets. The upstream algorithm cannot be ported unchanged without qualification.
+
+#### E. Analysis of the E1.7 Failure on Cycle 2
+1. **Minimum State Transitions Inferred**: In Cycle 2, dmesg logged `FX3 16 KiB DMA buffer order switched to SWAPPED` at `[26802.124571]` and again at `[26899.272523]`. Because line 230 toggles `p->swap_mode = !p->swap_mode;`, a second print of `SWAPPED` proves that a **minimum of two state transitions** (`SWAPPED -> NORMAL -> SWAPPED`) occurred, requiring at least 4 qualifying observation votes (`Confirmed`). The exact total number of transitions was masked by printk ratelimiting (`Unknown`).
+2. **URB Completion Lengths in E1.7**: The runtime values of `urb->actual_length` for Cycle 1 and Cycle 2 were not captured because `dev_dbg` was not enabled (`Unknown`).
+3. **Audio Sample Count Correction**: The 4-byte difference between Cycle 1 (`audio_bytes = 204800`) and Cycle 2 (`audio_bytes = 204796`) represents exactly one 16-bit stereo PCM sample pushed to ALSA, not raw USB transfer bytes or FIFO occupancy. It cannot be used as evidence for physical FIFO residue.
+
+---
+
+### 5. Phase E1.9 Passive Diagnostic Investigation Plan
+
+To resolve the remaining unknowns without altering driver behavior or introducing timing jitter, a passive, non-intrusive diagnostic instrumentation specification is established for future implementation.
+
+#### A. Diagnostic Capture Targets
+The diagnostic collector will record:
+1. **Stream Cycle Counter**: Incremented on each STREAMON invocation.
+2. **URB Monotonic Completion Sequence & Slot Index**: Distinguishes the completion order ($0, 1, 2, \dots$) from the fixed hardware URB slot ($0..3$).
+3. **URB Status & Runtime `actual_length`**: Captures short transfers or USB errors.
+4. **Cumulative Raw USB Stream Byte Offset**: $\Sigma \text{urb->actual\_length}$ from stream start.
+5. **Initial SAV Observations**: Absolute raw stream offset, relative URB offset, and `b0` sequence byte for at least the first 8 checksum-valid SAV markers per stream.
+6. **Qualifying Observation Events**: Exact byte offsets, span lengths (`video_pos`), and sequence comparison (`b0` vs `c0`).
+7. **Swap Transitions**: `swap_mode` before/after, `swap_votes`, `pair_pos` before/after, and a flag indicating whether the transition occurred while inside `gc550_parse_ordered_bytes()`.
+8. **Offset Domain Separation**: Explicit separation of raw physical USB offsets from logical post-swap parser offsets.
+
+#### B. Concurrency, Ring-Buffer Design, and Overhead Elimination
+- **Pre-Allocated Memory**: Diagnostic ring buffer (`struct gc550_diag_event[64]`) allocated in `gc550_dev` during device probe; zero memory allocation in the streaming path.
+- **Lockless Capture**: Event index advanced via `atomic_inc_return()`. Write operations access distinct pre-allocated slots; no mutexes or spinlocks acquired in the hot path.
+- **Bounded Retention & Overflow**: The ring buffer records the first 64 significant events per stream. Once full, an atomic overflow counter increments; further events are dropped to prevent buffer overwrites.
+- **Zero Console I/O During Streaming**: No `printk` or `dev_dbg` calls are made during active video processing. At STREAMOFF, [`gc550_stop_streaming()`](../kernel/gc550-video.c) formats and dumps the diagnostic log in a single deferred summary block.
+- **Primary Discriminating Measurement**: The single highest-value metric is the **exact byte offset of the very first checksum-valid SAV marker relative to `urb->transfer_buffer[0]` on Cycle 2, combined with `urb->actual_length` of that initial transfer**. This distinguishes USB FIFO residue (short packet or unaligned offset) from hardware socket phase persistence (SAV aligned to offset 0 vs 16,384).
 
 ---
 
@@ -757,9 +866,15 @@ The table below summarizes the established reverse-engineering findings, their e
 | **FX3 Opcodes `0x08` and `0x0E` in `gc550_init_blob`**: Step `0` executes `0e 02 07 fe 02 00` (`512` B read); Step `1` executes `08` (`1` B write). | [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h) line 37, [`PROTOCOL.md`](../PROTOCOL.md) lines 793–803. | `Confirmed` (wire format) / `Inferred` (`0x0E` reads EEPROM) | Exact internal action performed by FX3 firmware upon receiving `0x08` (and `0x14` on GC551) is `Unknown` without FX3 firmware disassembly. |
 | **Initialization Table (`gc550_init_blob`) Structure**: `53,146` bytes containing `6,576` steps (`1,853` × `0x01`, `4,721` × `0x02`, `1` × `0x08`, `1` × `0x0E`). | [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h), [`kernel/gc550-cmd.c`](../kernel/gc550-cmd.c), offline structural validator. | `Confirmed` | Approximately `4,800` of the `6,576` steps are periodic status-polling reads recorded in the original Windows USB capture; minimal cold-init subset reduction has not been tested on GC550 hardware. |
 | **Warm Board-State Detection & Auto Colorspace Fixup**: `gc550_detect_board_state()` checks `ADV7604 IO[0xFA] == 0x6C` (the correct EDID map register and value) and `PCA9539A[0x06..0x07] == {0x00, 0x09}`; `gc550_set_auto_input_colorspace()` sets `IO[0x02]` bits `7:4 = 0xF` (`0x1C -> 0xFC`) and resets `CP[0x3A..0x3D] = {0x80, 0x80, 0x00, 0x00}`. | [`kernel/gc550-cmd.c`](../kernel/gc550-cmd.c) lines 212–270, `gc550_init_blob` (`steps 91, 363, 5989`), runtime testing on GC550. | `Confirmed` | **Unresolved driver reliability issue**: checking `IO[0xFA] == 0x6C` and `PCA9539A[0x06..0x07] == {0x00, 0x09}` cannot distinguish a fully completed `6,576`-step bootstrap from a previously interrupted bootstrap that failed after `step 363`. |
-| **Capture Stream Framing & Runtime Validation**: `SAV` (`00 FF FF C0` + 4B), `EAV` (`00 FF FF C1` + 5B), `AUDIO` (`00 FF FF 58` + BE32 len), `AA 55 55 AA` filler. Five sizes in `gc550_frame_sizes[]`: `1920×1080`, `1280×720`, `720×576`, `720×480`, `640×480`. | [`PROTOCOL.md`](../PROTOCOL.md), [`kernel/gc550-video.c`](../kernel/gc550-video.c), [`CHANGELOG.md`](../CHANGELOG.md), [`README.md`](../README.md), [`TODO.md`](../TODO.md). | `Confirmed` | Endurance testing (`3.6+ hours`, `776,295` frames) was performed only at `1080p60` on Niri (`7.3.1-1-cachyos`); lower resolutions were tested for `100–120` frames each. V4L2 interval enumeration currently hardcodes `60 fps` for all sizes. |
+| **Capture Stream Framing & Runtime Validation**: `SAV` (`00 FF FF C0` + 4B), `EAV` (`00 FF FF C1` + 5B), `AUDIO` (`00 FF FF 58` + BE32 len), `AA 55 55 AA` filler. Five sizes in `gc550_frame_sizes[]`: `1920×1080`, `1280×720`, `720×576`, `720×480`, `640×480`. | [`PROTOCOL.md`](../PROTOCOL.md), [`kernel/gc550-video.c`](../kernel/gc550-video.c), [`CHANGELOG.md`](../CHANGELOG.md), [`README.md`](../README.md), [`TODO.md`](../TODO.md). | `Confirmed` | Multi-resolution short smoke tests (50–300 frames) verified on hardware; long-duration endurance testing was performed only at 1080p60 on Titan (108,000 frames) and Niri (776,295 frames). V4L2 interval enumeration currently hardcodes `60 fps` for all sizes. |
 | **Kernel Stream Parser vs. Offline Python `StreamParser`**: Both implement `marker_stage` `0..3`, 2-vote `swap_mode` (`video_pos <= 32768 && eav_c0 != sav_b0`), `32 KiB` `pair_buf` reordering, `4,163,585` B span saturation, and `±0x4000` span tolerance, but differ in `vb2` buffer copying, `{16, 128, 16, 128}` tail padding, `frame_sequence` gating (`if (done_buf)`), and ALSA delivery. | [`kernel/gc550-video.c`](../kernel/gc550-video.c), `scratch/gc550_stage4a_probe.py`. | `Confirmed` | All 7 unit tests in `TestStage4AProbeOffline` cover **only** the offline Python model on synthetic byte arrays; the kernel's `gc550_yuyv_black` short-frame tail fill has not yet been triggered by a natural short span on hardware ([`TODO.md`](../TODO.md) line 18). |
 | **Programmed EDID (`0x36`) & `REP[0x77]` State in `gc550_init_blob`**: `steps 286..293` write the 256-byte `"ADI HDMI TV"` EDID (`0x91..0xA3` Audio Data Block, header `0x32`, LPCM SAD #1 `0f 7f 07` = 8-ch, `32..192 kHz`, `16/20/24-bit`, plus AC-3, DTS, E-AC-3, DTS-HD, TrueHD), then `steps 309..317` sequence `REP[0x77]` `01 -> 03 -> 07 -> 0F -> 00`. | [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h) lines 180–200, [`PROTOCOL.md`](../PROTOCOL.md) line 686. | `Confirmed` (bytes & `REP[0x77]=0x00` in `gc550_init_blob`) / `Unknown` (runtime DDC source) | The final `REP[0x77] = 0x00` write at `step 317` disables all four internal ADV7604 EDID ports (`bits 3:0`), and `steps 326..349` pulse the `PCA9539A` reset line a second time and rewrite `IO[0xF3..0xFE]` (`steps 351..373`) **without** rewriting `0x36` or `REP[0x77]`. What EDID the HDMI source actually receives on GC550 hardware is unresolved. |
 | **Audio Transport & Sample-Rate Handling (Phases B2, C1–C3, D1, D2.1, D2.2.7)**: Fixed `48 kHz` stereo `S16_LE` ALSA capture confirmed on Titan under both `48,000 Hz` (D2 Condition 1) and `44,100 Hz` (D2 Condition 2) HDMI input. ADV7604 correctly reports HDMI input rate (`IO[0x65]`, `HDMI[0x39]`). Audio continuity verified across 30-second captures (`0` anomalies `> 0.5 samples`). Signal converts from `44.1 kHz` to `48 kHz` upstream of host USB capture. Duplicate samples occur exclusively at turning-point apexes (`|s| >= 22,900 LSB`). | [`kernel/gc550-video.c`](../kernel/gc550-video.c), [`kernel/gc550-audio.c`](../kernel/gc550-audio.c), [`kernel/gc550-cmd.c`](../kernel/gc550-cmd.c), Titan hardware captures C1/C2, offline analysis script `verify_d2_audio.py`. | `Confirmed` (Fixed `48 kHz` `S16_LE` capture, ADV7604 rate decoding, transport continuity) / `Unknown` (Internal silicon conversion block) | Fixed `48 kHz` ALSA capture configuration confirmed permanent; dynamic rate switching is unnecessary. Exact internal silicon component and conversion location (`44.1 kHz -> 48 kHz`) remain `Unknown`. |
 | **Uncharacterized I2C Slaves (`0x4A`, `0x65`, `0x3F`) & FPGA (`0x10`) Registers**: Addressed in `gc550_init_blob` (`0x4A`: `125`W/`106`R; `0x65`: `4`W; `0x3F`: `8`×32B R; `0x10`: `18`W/`6`R). | [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h), [`PROTOCOL.md`](../PROTOCOL.md) lines 579–581. | `Confirmed` (I2C transactions) / `Unknown` (IC identities & register maps) | Exact IC part numbers and register definitions of `0x4A`, `0x65`, and `0x3F`, as well as the internal register map of the Lattice ECP3 FPGA (`0x10`), remain `Unknown`. |
-| **V4L2 Streaming Compliance & Buffer Lifecycle (Phases E1.4–E1.5.2)**: 100% compliance pass (57/57 streaming, 48/48 non-streaming, 0 failures, 0 warnings) on Titan (`7.3.3-1-cachyos`, `srcversion: 27D8CAC60C62239C91B8BFC`). Buffers reserve strictly at SAV boundary; centralized `gc550_finish_buffer()` provides monotonic timestamps and sequence intervals; `gc550_buf_prepare()` validates virtual addresses. | `v4l2-compliance 1.32.0` on Titan bare-metal hardware, [`kernel/gc550-video.c`](../kernel/gc550-video.c). | `Confirmed` (for 1080p MMAP, USERPTR, select, epoll) | Endurance testing, non-1080p resolutions, simultaneous audio+video stress, and DMABUF export (`--expbuf-device`) remain pending. |
+| **V4L2 Streaming Compliance, Multi-Resolution & Endurance (Phases E1.4–E1.6)**: 100% compliance pass (57/57 streaming, 48/48 non-streaming, 0 failures, 0 warnings) on Titan (`7.3.3-1-cachyos`, `srcversion: 27D8CAC60C62239C91B8BFC`). Buffers reserve strictly at SAV boundary; centralized `gc550_finish_buffer()` provides monotonic timestamps and sequence intervals; `gc550_buf_prepare()` validates virtual addresses. Phase E1.6 verified 30-minute endurance (108,000 frames dequeued, 0 dropped, 0 mid-stream desyncs), short multi-resolution functional checks across all 5 sizes (1080p [300 frames], 720p [62], 576p [51], 480p [60], 640x480 [62]), and 30s simultaneous AV capture demonstrating 99.84% audio/video duration correspondence without independent lip-sync measurement. | `v4l2-compliance 1.32.0`, `v4l2-ctl`, `arecord` on Titan bare-metal hardware. | `Confirmed` (for 1080p MMAP/USERPTR, 30-min endurance, 5-resolution functional checks, AV duration correspondence) | Hot unplug/replug during active capture remains unverified on hardware (software unbind/bind evaluated). DMABUF export (`--expbuf-device`) remains pending. |
+| **Swap State Lifecycle & Phase E1.7 Testing**: Unconditional `swap_mode = false` reset at STREAMON was tested (`A68A3199829648981D6FDB3`) and failed on rapid stream restart (RG-02 Cycle 2: 0 dequeued frames, 5,433 desyncs over ~98s, `frames=64, audio_bytes=204796`). Restored to verified baseline E1.5.2.2 (`27D8CAC60C62239C91B8BFC`, commit `8744e86`). | Hardware regression on Titan bare-metal, kernel logs, task logs. | `Confirmed` (for RG-01 pass, RG-02 failure, rollback) / `Hypothesis` (FX3 socket state persistence) | Unconditional reset at STREAMON rejected. Read-only investigation of FX3 DMA socket behavior planned for Phase E1.8. |
+| **Unanchored Pairing Grid & Mid-URB Mode Transition (Phase E1.8)**: Kernel driver pair accumulation starts at host URB byte 0 without SAV anchoring; mode transitions occur mid-URB while `gc550_parse_ordered_bytes()` continues processing remainder unswapped; no downstream framing reset occurs on order change. | Source code audit of [`kernel/gc550-video.c`](../kernel/gc550-video.c) lines 220–258, 453–485. | `Confirmed` | Exact byte alignment of initial URB on warm stream restart remains `Unknown` until passive diagnostic capture is executed. |
+| **Upstream `BufferReorderer` SAV-Anchored Architecture (Phase E1.8)**: Upstream reference explicitly anchors 32 KiB pair grid to `observation.savOffset`, drops leading bytes prior to decided SAV, detects normal order via 32 KiB lookahead window, transitions bidirectionally, and passes `gapped = true` to downstream `FrameBuilder`. | Source code audit of `ChrisAJS/lgx2userspace` (`BufferReorderer.{h,cpp}`, commit `908a1ce3`). | `Confirmed` | Upstream FrameBuilder arming discrepancy confirmed: header comment requires `c0 == b0`, but code arms on checksum alone and treats `c[0] != _savB0` as soft mismatch. |
+| **Multi-Resolution DMA Block Parity & Phase Drift Risk (Phase E1.8)**: Upstream algorithm assumes an even number of 16 KiB blocks per frame period (1080p: 254 blocks). If lower resolutions have odd block periods, SAV alternates between Block 0 and Block 1 on alternating frames, breaking upstream's `(savOffset - pairOrigin) % 32768 == 0` check. | Mathematical analysis of frame periods, [`PROTOCOL.md`](../PROTOCOL.md), `BufferReorderer.cpp`. | `Confirmed` (for 1080p 254 even blocks) / `Inferred` (phase drift risk on odd blocks) | Exact total frame period (with padding) in 16 KiB blocks for 720p, 576p, 480p, and 640x480 is `Unknown`. |
+| **STREAMOFF Hardware State & FIFO Behavior (Phase E1.8)**: Kernel driver issues no explicit FX3 stop, DMA channel reset, or FIFO flush command at STREAMOFF. Actual FX3 hardware state and FIFO occupancy during pause remain unmeasured. | [`kernel/gc550-video.c`](../kernel/gc550-video.c) lines 676–690. | `Confirmed` (driver inaction) / `Unknown` (FX3 hardware behavior) | Whether `usb_clear_halt()` on EP 0x83 safely flushes the FX3 Bulk IN FIFO without wedging endpoint state. |
+
