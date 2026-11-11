@@ -219,7 +219,8 @@ If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for 
 ├── CONTRIBUTING.md          # Developer & maintainer guide
 ├── Kbuild                   # Kernel build object definitions
 ├── LICENCE.md               # Upstream MIT license (Chris Sawczuk)
-├── LICENSE-GPL-2.0          # GNU General Public License v2 text
+├── LICENSE-GPL-2.0          # GNU General Public License v2 text (original project code)
+├── LICENSE-MIT              # MIT License (original project code, Øystein Lie)
 ├── LICENSES.md              # Project licensing policy & provenance guide
 ├── Makefile                 # Out-of-tree kernel module Makefile (GCC & Clang/LLVM auto-detect)
 ├── PKGBUILD                 # Arch Linux / CachyOS pacman package build script (avermedia-gc550-dkms)
@@ -265,7 +266,7 @@ This project contains original Linux kernel driver code and incorporates researc
 All original Linux kernel driver code, headers, build scripts, and packaging authored for `lgx2KernelLevel` (Copyright (C) 2026 Øystein Lie) are dual-licensed under:
 
 - **GNU General Public License version 2 only (`GPL-2.0-only`)** ([`LICENSE-GPL-2.0`](LICENSE-GPL-2.0)); **OR**
-- **The MIT License (`MIT`)** ([`LICENCE.md`](LICENCE.md)), at your option.
+- **The MIT License (`MIT`)** ([`LICENSE-MIT`](LICENSE-MIT)), at your option.
 
 This dual-licensing arrangement allows permissive MIT reuse while ensuring full compatibility with the Linux kernel's GPL-2.0 licensing requirements. The kernel module binary declares `MODULE_LICENSE("Dual MIT/GPL")`.
 

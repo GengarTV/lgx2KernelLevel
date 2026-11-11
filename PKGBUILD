@@ -25,8 +25,10 @@ package() {
 
 	install -Dm644 "${src_root}/99-avermedia-gc550.rules" \
 		"${pkgdir}/usr/lib/udev/rules.d/99-avermedia-gc550.rules"
-	install -Dm644 "${src_root}/LICENCE.md" \
+	install -Dm644 "${src_root}/LICENSE-MIT" \
 		"${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"
+	install -Dm644 "${src_root}/LICENCE.md" \
+		"${pkgdir}/usr/share/licenses/${pkgname}/LICENCE.md"
 	install -Dm644 "${src_root}/LICENSE-GPL-2.0" \
 		"${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-GPL-2.0"
 	install -Dm644 "${src_root}/LICENSES.md" \
