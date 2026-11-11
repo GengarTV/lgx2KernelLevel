@@ -157,8 +157,10 @@ Hardware investigation (Phases B2, C1–C3, D1, D2.1, and D2.2.7) concluded. Con
 ### Phase 2: Mainline Linux Kernel Submission (`drivers/media/usb/gc550/`)
 Target subsystem: **Linux Media Subsystem (`linux-media@vger.kernel.org`)**, maintained by Hans Verkuil (V4L2) and Mauro Carvalho Chehab.
 
-- [ ] **1. License Coordination (`GPL-3.0` → `GPL-2.0-or-later`)**:
-  - The mainline Linux kernel requires `GPL-2.0` compatibility. Coordinate with upstream author **Chris Sawczuk ([@ChrisAJS](https://github.com/ChrisAJS))** to dual-license/re-license the reverse-engineered GC550 hardware initialization tables under `GPL-2.0-or-later` and invite him to co-sign (`Signed-off-by` / `Co-developed-by`) the upstream patch series.
+- [x] **1. License Alignment (Dual-License: GPL-2.0-only OR MIT)**:
+  - Upstream reference project `ChrisAJS/lgx2userspace` is MIT licensed (permissive).
+  - Original project code authored by Øystein Lie is dual-licensed under `GPL-2.0-only OR MIT`, providing both GPL-2.0 compatibility for Linux kernel inclusion and permissive MIT licensing for downstream users.
+  - Driver declares `MODULE_LICENSE("Dual MIT/GPL")` in `kernel/gc550-core.c`. Complete licensing details documented in [`LICENSES.md`](LICENSES.md).
 - [x] **2. Pass `v4l2-compliance -s` with Zero Failures**:
   - Verified on Titan (`7.3.3-1-cachyos`, Clang/LLVM `W=1`, `srcversion: 27D8CAC60C62239C91B8BFC`):
     - Non-streaming: `48/48` succeeded (`0` failures).

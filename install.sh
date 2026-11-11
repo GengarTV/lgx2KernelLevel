@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-2.0-only OR MIT
 #
 # Smart Installer / Uninstaller for AVerMedia Live Gamer Extreme (GC550) Kernel Driver
 #

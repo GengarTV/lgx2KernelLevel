@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-2.0-only OR MIT
 KVER ?= $(shell uname -r)
 KDIR ?= /lib/modules/$(KVER)/build
 PWD  := $(shell pwd)

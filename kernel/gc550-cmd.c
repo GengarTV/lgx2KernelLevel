@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
 /*
  * AVerMedia Live Gamer Extreme (GC550) - USB Command & I2C Bridge
  *
@@ -8,7 +8,7 @@
  * - Command bridge protocol, board-state detection (ADV7604 IO 0xFA / PCA9539A),
  *   automatic input color space fix (ADV7604 IO 0x02), and AT88SC CryptoMemory
  *   safety research by Chris Sawczuk (ChrisAJS) and contributors to
- *   `lgx2userspace` (https://github.com/ChrisAJS/lgx2userspace).
+ *   `lgx2userspace` (https://github.com/ChrisAJS/lgx2userspace, MIT License).
  *
  * Protocol notes:
  * - Commands are sent over Bulk OUT 0x01 and replies received on Bulk IN 0x81.

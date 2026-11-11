@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
 /*
  * AVerMedia Live Gamer Extreme (GC550) - V4L2 Video Capture & Stream Parser
  *
@@ -8,7 +8,7 @@
  * - BT.1120 SAV/EAV framing, header checksum formulas, cross-URB straddle
  *   handling, and 16 KiB FX3 DMA swap detection are based on the protocol
  *   reverse-engineering and reference implementation by Chris Sawczuk (ChrisAJS)
- *   and contributors in `lgx2userspace` (https://github.com/ChrisAJS/lgx2userspace).
+ *   and contributors in `lgx2userspace` (https://github.com/ChrisAJS/lgx2userspace, MIT License).
  *
  * Stream framing protocol on Bulk IN 0x83:
  * - Video frame start (SAV): [00 FF FF C0] + 4-byte header [b0 b1 b2 b3]

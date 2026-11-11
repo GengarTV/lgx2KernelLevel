@@ -8,7 +8,7 @@ pkgrel=1
 pkgdesc="AVerMedia Live Gamer Extreme (GC550) V4L2 + ALSA USB 3.0 Capture Kernel Driver (DKMS)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/GengarTV/lgx2KernelLevel"
-license=('GPL-3.0-or-later')
+license=('GPL-2.0-only OR MIT')
 depends=('dkms')
 provides=('avermedia-gc550')
 conflicts=('avermedia-gc550')
@@ -26,5 +26,9 @@ package() {
 	install -Dm644 "${src_root}/99-avermedia-gc550.rules" \
 		"${pkgdir}/usr/lib/udev/rules.d/99-avermedia-gc550.rules"
 	install -Dm644 "${src_root}/LICENCE.md" \
-		"${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+		"${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"
+	install -Dm644 "${src_root}/LICENSE-GPL-2.0" \
+		"${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-GPL-2.0"
+	install -Dm644 "${src_root}/LICENSES.md" \
+		"${pkgdir}/usr/share/licenses/${pkgname}/LICENSES.md"
 }

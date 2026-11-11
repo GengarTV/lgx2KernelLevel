@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
 /*
  * AVerMedia Live Gamer Extreme (GC550) - ALSA PCM Capture Subdriver
  *
@@ -7,7 +7,7 @@
  * Credits & Attribution:
  * - Multiplexed audio packet format (`00 FF FF 58` + BE32 length + S16_LE 48kHz
  *   stereo PCM) based on protocol reverse-engineering by Chris Sawczuk (ChrisAJS)
- *   and contributors in `lgx2userspace` (https://github.com/ChrisAJS/lgx2userspace).
+ *   and contributors in `lgx2userspace` (https://github.com/ChrisAJS/lgx2userspace, MIT License).
  *
  * Audio packets arrive multiplexed in the USB 3.0 bulk stream (EP 0x83)
  * immediately following each video frame's EAV marker:

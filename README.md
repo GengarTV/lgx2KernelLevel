@@ -218,6 +218,9 @@ If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for 
 ├── CHANGELOG.md             # Version history and release notes
 ├── CONTRIBUTING.md          # Developer & maintainer guide
 ├── Kbuild                   # Kernel build object definitions
+├── LICENCE.md               # Upstream MIT license (Chris Sawczuk)
+├── LICENSE-GPL-2.0          # GNU General Public License v2 text
+├── LICENSES.md              # Project licensing policy & provenance guide
 ├── Makefile                 # Out-of-tree kernel module Makefile (GCC & Clang/LLVM auto-detect)
 ├── PKGBUILD                 # Arch Linux / CachyOS pacman package build script (avermedia-gc550-dkms)
 ├── PROTOCOL.md              # USB 3.0 protocol & hardware specification (by @ChrisAJS)
@@ -254,6 +257,27 @@ If you are on **Windows**, **macOS**, or want the **userspace driver (`lgx2users
 
 ---
 
-## License
+## Licensing & Provenance
 
-Currently licensed under the **MIT License** ([`LICENCE.md`](LICENCE.md)).
+This project contains original Linux kernel driver code and incorporates research, protocol definitions, and hardware initialization data derived from the upstream [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) project.
+
+### 1. Original Project Code (`GPL-2.0-only OR MIT`)
+All original Linux kernel driver code, headers, build scripts, and packaging authored for `lgx2KernelLevel` (Copyright (C) 2026 Øystein Lie) are dual-licensed under:
+
+- **GNU General Public License version 2 only (`GPL-2.0-only`)** ([`LICENSE-GPL-2.0`](LICENSE-GPL-2.0)); **OR**
+- **The MIT License (`MIT`)** ([`LICENCE.md`](LICENCE.md)), at your option.
+
+This dual-licensing arrangement allows permissive MIT reuse while ensuring full compatibility with the Linux kernel's GPL-2.0 licensing requirements. The kernel module binary declares `MODULE_LICENSE("Dual MIT/GPL")`.
+
+### 2. Upstream lgx2userspace Material (`MIT License`)
+Foundational USB 3.0 protocol reverse-engineering, hardware initialization tables, BT.1120 SAV/EAV checksum validation formulas, and AT88SC CryptoMemory research are derived from [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace):
+
+- **Copyright 2021 Chris Sawczuk <chris@sawcz.uk> and contributors**
+- Licensed under the **MIT License** ([`LICENCE.md`](LICENCE.md)).
+
+All upstream copyright notices, permissions, and conditions are preserved in full. Upstream authors have not granted additional licensing rights beyond the MIT License.
+
+### 3. Upstream Protocol Specification
+The upstream specification [`PROTOCOL.md`](PROTOCOL.md) is preserved verbatim as historical documentation under its original author's copyright and MIT licensing.
+
+For complete details and file-by-file classifications, see [`LICENSES.md`](LICENSES.md).

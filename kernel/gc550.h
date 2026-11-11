@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* SPDX-License-Identifier: GPL-2.0-only OR MIT */
 /*
  * AVerMedia Live Gamer Extreme (GC550) USB 3.0 Capture Driver
  *
@@ -9,7 +9,7 @@
  *   AT88SC CryptoMemory safety analysis, and GC550/GC551 I2C bootstrap tables
  *   are based on the reverse-engineering work and userspace driver by
  *   Chris Sawczuk (ChrisAJS) and contributors at:
- *   https://github.com/ChrisAJS/lgx2userspace (licensed under GPL-3.0).
+ *   https://github.com/ChrisAJS/lgx2userspace (MIT License).
  * - ADV7604 and ADV7511 register definitions cross-referenced with the Linux
  *   kernel media drivers (`drivers/media/i2c/adv7604.c` & `adv7511-v4l2.c`).
  */

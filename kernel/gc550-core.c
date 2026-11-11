@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
 /*
  * AVerMedia Live Gamer Extreme (GC550) - USB 3.0 Capture Driver Core
  *
  * Copyright (C) 2026 Øystein Lie <oeystein@gengartv.com>
  *
  * Based on USB protocol reverse-engineering and hardware analysis by
- * Chris Sawczuk (ChrisAJS) and contributors (https://github.com/ChrisAJS/lgx2userspace).
+ * Chris Sawczuk (ChrisAJS) and contributors (https://github.com/ChrisAJS/lgx2userspace, MIT License).
  */
 
 #include <linux/slab.h>
@@ -146,5 +146,5 @@ module_usb_driver(gc550_usb_driver);
 MODULE_AUTHOR("Øystein Lie <oeystein@gengartv.com>");
 MODULE_AUTHOR("Chris Sawczuk (protocol reverse-engineering & lgx2userspace)");
 MODULE_DESCRIPTION("AVerMedia Live Gamer Extreme (GC550) V4L2 + ALSA USB 3.0 Capture Driver");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("Dual MIT/GPL");
 MODULE_VERSION(GC550_DRIVER_VERSION);

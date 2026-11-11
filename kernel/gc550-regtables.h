@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* SPDX-License-Identifier: GPL-2.0-only OR MIT */
 /*
  * AVerMedia Live Gamer Extreme (GC550) - Hardware Initialization Sequence
  *
@@ -9,7 +9,7 @@
  * (including the AT88SC CryptoMemory anti-clone analysis and removal, ADV7604
  * auto-colorspace fix, and board-state detection) were reverse-engineered and
  * documented by Chris Sawczuk (ChrisAJS) and contributors to the open-source
- * `lgx2userspace` project (https://github.com/ChrisAJS/lgx2userspace, GPL-3.0).
+ * `lgx2userspace` project (https://github.com/ChrisAJS/lgx2userspace, MIT License).
  *
  * Contains the 6,576 USB-to-I2C bridge setup transactions (PCA9539A GPIO,
  * ADV7604 HDMI receiver + EDID RAM, ADV7511 HDMI passthrough transmitter,

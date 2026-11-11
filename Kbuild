@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: GPL-2.0-only OR MIT
 obj-m += gc550.o
 gc550-y := kernel/gc550-core.o \
            kernel/gc550-cmd.o \
