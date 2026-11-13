@@ -1,0 +1,313 @@
+From 52e1d1c1b26daddf82f3dd6fc5edccd5b96cf479 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=98ystein=20Lie?= <oeystein@gengartv.com>
+Date: Fri, 13 Nov 2026 15:50:14 +0100
+Subject: [PATCH 1/4] media: gc550: add driver skeleton, lifecycle and
+ registration
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add core USB driver skeleton, module device table, and reference-
+counted device lifecycle for the AVerMedia Live Gamer Extreme (GC550)
+capture card (USB ID 07ca:4710 / 07ca:0550).
+
+The GC550 combines an Analog Devices ADV7604 HDMI receiver, Lattice
+ECP3 FPGA packetizer, and Cypress FX3 USB 3.0 controller delivering
+uncompressed 1080p60 video and stereo audio.
+
+This patch establishes:
+- USB probe and disconnect lifecycle tied to a unified kref.
+- Mutexes and IRQ-safe spinlocks for V4L2, command, and stream gating.
+- Module metadata and device ID registration.
+- Kconfig, Makefile, and MAINTAINERS entries.
+
+Signed-off-by: Øystein Lie <oeystein@gengartv.com>
+---
+ MAINTAINERS                          |   6 ++
+ drivers/media/usb/Kconfig            |  12 +++
+ drivers/media/usb/Makefile           |   1 +
+ drivers/media/usb/gc550/Makefile     |   4 +
+ drivers/media/usb/gc550/gc550-core.c | 150 +++++++++++++++++++++++++++
+ drivers/media/usb/gc550/gc550.h      |  65 ++++++++++++
+ 6 files changed, 238 insertions(+)
+ create mode 100644 drivers/media/usb/gc550/Makefile
+ create mode 100644 drivers/media/usb/gc550/gc550-core.c
+ create mode 100644 drivers/media/usb/gc550/gc550.h
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 0db330c..1356757 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -1 +1,7 @@
+ # Linux Media Maintainers
++
++AVERMEDIA LIVE GAMER EXTREME (GC550) DRIVER
++M:	Øystein Lie <oeystein@gengartv.com>
++L:	linux-media@vger.kernel.org
++S:	Maintained
++F:	drivers/media/usb/gc550/
+diff --git a/drivers/media/usb/Kconfig b/drivers/media/usb/Kconfig
+index 01c268a..7569ab8 100644
+--- a/drivers/media/usb/Kconfig
++++ b/drivers/media/usb/Kconfig
+@@ -1 +1,13 @@
+ # USB media Kconfig
++
++config VIDEO_GC550
++	tristate "AVerMedia Live Gamer Extreme (GC550) support"
++	depends on USB && VIDEO_DEV
++	select VIDEOBUF2_VMALLOC
++	select SND_PCM
++	help
++	  This is a video4linux2 and ALSA capture driver for the AVerMedia
++	  Live Gamer Extreme (GC550) USB 3.0 capture device.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called gc550.
+diff --git a/drivers/media/usb/Makefile b/drivers/media/usb/Makefile
+index d1c389a..66551d7 100644
+--- a/drivers/media/usb/Makefile
++++ b/drivers/media/usb/Makefile
+@@ -1 +1,2 @@
+ # Media USB drivers
++obj-$(CONFIG_VIDEO_GC550) += gc550/
+diff --git a/drivers/media/usb/gc550/Makefile b/drivers/media/usb/gc550/Makefile
+new file mode 100644
+index 0000000..fca959b
+--- /dev/null
++++ b/drivers/media/usb/gc550/Makefile
+@@ -0,0 +1,4 @@
++# SPDX-License-Identifier: GPL-2.0-only OR MIT
++gc550-objs := gc550-core.o
++
++obj-$(CONFIG_VIDEO_GC550) += gc550.o
+diff --git a/drivers/media/usb/gc550/gc550-core.c b/drivers/media/usb/gc550/gc550-core.c
+new file mode 100644
+index 0000000..862bdfb
+--- /dev/null
++++ b/drivers/media/usb/gc550/gc550-core.c
+@@ -0,0 +1,150 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++/*
++ * AVerMedia Live Gamer Extreme (GC550) - USB 3.0 Capture Driver Core
++ *
++ * Copyright (C) 2026 Øystein Lie <oeystein@gengartv.com>
++ *
++ * Based on USB protocol reverse-engineering and hardware analysis by
++ * Chris Sawczuk (ChrisAJS) and contributors (https://github.com/ChrisAJS/lgx2userspace, MIT License).
++ */
++
++#include <linux/slab.h>
++#include "gc550.h"
++
++void gc550_dev_release(struct kref *ref)
++{
++	struct gc550_dev *dev = container_of(ref, struct gc550_dev, ref);
++
++	usb_put_intf(dev->intf);
++	usb_put_dev(dev->udev);
++	kfree(dev);
++}
++
++static const struct usb_device_id gc550_usb_table[] = {
++	{ USB_DEVICE(USB_VID_AVERMEDIA, USB_PID_GC550) },
++	{ USB_DEVICE(USB_VID_AVERMEDIA, USB_PID_GC550_ALT) },
++	{ }
++};
++MODULE_DEVICE_TABLE(usb, gc550_usb_table);
++
++static int gc550_probe(struct usb_interface *intf,
++		       const struct usb_device_id *id)
++{
++	struct usb_device *udev = interface_to_usbdev(intf);
++	struct gc550_dev *dev;
++	int ret;
++
++	/* Only bind to interface 0 */
++	if (intf->cur_altsetting->desc.bInterfaceNumber != 0)
++		return -ENODEV;
++
++	dev_info(&intf->dev,
++		 "AVerMedia Live Gamer Extreme (GC550) [%04x:%04x] detected (USB speed: %s)\n",
++		 le16_to_cpu(udev->descriptor.idVendor),
++		 le16_to_cpu(udev->descriptor.idProduct),
++		 usb_speed_string(udev->speed));
++
++	if (udev->speed < USB_SPEED_SUPER) {
++		dev_warn(&intf->dev,
++			 "Device is not connected to a USB 3.0 SuperSpeed port! Streaming 1080p60 requires USB 3.0.\n");
++	}
++
++	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
++	if (!dev)
++		return -ENOMEM;
++
++	kref_init(&dev->ref);
++	dev->udev = usb_get_dev(udev);
++	dev->intf = usb_get_intf(intf);
++	mutex_init(&dev->v4l2_lock);
++	mutex_init(&dev->cmd_lock);
++	mutex_init(&dev->stream_mutex);
++	spin_lock_init(&dev->stream_lock);
++
++	usb_set_intfdata(intf, dev);
++
++	ret = gc550_cmd_init(dev);
++	if (ret < 0)
++		goto err_put_usb;
++
++	ret = gc550_video_register(dev);
++	if (ret < 0) {
++		dev_err(&intf->dev, "Failed to register V4L2 video device: %d\n",
++			ret);
++		goto err_free_cmd;
++	}
++
++	ret = gc550_audio_register(dev);
++	if (ret < 0) {
++		dev_err(&intf->dev, "Failed to register ALSA audio device: %d\n",
++			ret);
++		goto err_unreg_video;
++	}
++
++	dev_info(&intf->dev,
++		 "Registered %s as /dev/%s and ALSA capture card\n",
++		 GC550_DRIVER_NAME, video_device_node_name(&dev->vdev));
++
++	return 0;
++
++err_unreg_video:
++	gc550_video_unregister(dev);
++err_free_cmd:
++	gc550_cmd_free(dev);
++err_put_usb:
++	usb_set_intfdata(intf, NULL);
++	kref_put(&dev->ref, gc550_dev_release);
++	return ret;
++}
++
++static void gc550_disconnect(struct usb_interface *intf)
++{
++	struct gc550_dev *dev = usb_get_intfdata(intf);
++	unsigned long flags;
++
++	if (!dev)
++		return;
++
++	dev_info(&intf->dev, "AVerMedia GC550 disconnecting\n");
++	usb_set_intfdata(intf, NULL);
++
++	/*
++	 * Close the submission gate before waiting for userspace operations.
++	 * Completion callbacks serialize their GFP_ATOMIC resubmission with this
++	 * lock, so none can submit another URB after this transition.
++	 */
++	mutex_lock(&dev->stream_mutex);
++	spin_lock_irqsave(&dev->stream_lock, flags);
++	WRITE_ONCE(dev->disconnected, true);
++	dev->streaming = false;
++	spin_unlock_irqrestore(&dev->stream_lock, flags);
++	mutex_unlock(&dev->stream_mutex);
++
++	if (dev->v4l2_registered)
++		v4l2_device_disconnect(&dev->v4l2_dev);
++
++	mutex_lock(&dev->v4l2_lock);
++	vb2_queue_error(&dev->vb_queue);
++	gc550_video_stop_device(dev);
++	gc550_audio_unregister(dev);
++	gc550_video_unregister(dev);
++	mutex_unlock(&dev->v4l2_lock);
++
++	gc550_cmd_free(dev);
++	kref_put(&dev->ref, gc550_dev_release);
++}
++
++static struct usb_driver gc550_usb_driver = {
++	.name       = GC550_DRIVER_NAME,
++	.probe      = gc550_probe,
++	.disconnect = gc550_disconnect,
++	.id_table   = gc550_usb_table,
++};
++
++module_usb_driver(gc550_usb_driver);
++
++MODULE_AUTHOR("Øystein Lie <oeystein@gengartv.com>");
++MODULE_AUTHOR("Chris Sawczuk (protocol reverse-engineering & lgx2userspace)");
++MODULE_DESCRIPTION("AVerMedia Live Gamer Extreme (GC550) V4L2 + ALSA USB 3.0 Capture Driver");
++MODULE_LICENSE("Dual MIT/GPL");
++MODULE_VERSION(GC550_DRIVER_VERSION);
+diff --git a/drivers/media/usb/gc550/gc550.h b/drivers/media/usb/gc550/gc550.h
+new file mode 100644
+index 0000000..19769b5
+--- /dev/null
++++ b/drivers/media/usb/gc550/gc550.h
+@@ -0,0 +1,65 @@
++/* SPDX-License-Identifier: GPL-2.0-only OR MIT */
++/*
++ * AVerMedia Live Gamer Extreme (GC550) - Driver Definitions
++ *
++ * Copyright (C) 2026 Øystein Lie <oeystein@gengartv.com>
++ */
++
++#ifndef _GC550_H_
++#define _GC550_H_
++
++#include <linux/kernel.h>
++#include <linux/kref.h>
++#include <linux/mutex.h>
++#include <linux/spinlock.h>
++#include <linux/usb.h>
++#include <media/v4l2-device.h>
++#include <media/videobuf2-v4l2.h>
++
++#define GC550_DRIVER_NAME	"gc550"
++#define GC550_DRIVER_VERSION	"0.1.3"
++
++/* USB Vendor & Product IDs */
++#define USB_VID_AVERMEDIA	0x07ca
++#define USB_PID_GC550		0x4710
++#define USB_PID_GC550_ALT	0x0550
++
++/* USB Bulk Endpoints */
++#define GC550_EP_CMD_OUT	0x01
++#define GC550_EP_CMD_IN		0x81
++#define GC550_EP_STREAM_IN	0x83
++
++struct gc550_dev {
++	struct kref ref;
++	struct usb_device *udev;
++	struct usb_interface *intf;
++
++	/* Subsystem synchronization */
++	struct mutex v4l2_lock;
++	struct mutex cmd_lock;
++	struct mutex stream_mutex;
++	spinlock_t stream_lock;
++
++	bool streaming;
++	bool disconnected;
++	bool is_bootstrapped;
++	bool v4l2_registered;
++
++	/* Video device context */
++	struct v4l2_device v4l2_dev;
++	struct video_device vdev;
++	struct vb2_queue vb_queue;
++};
++
++void gc550_dev_release(struct kref *ref);
++
++/* Subsystem stubs for incremental patch construction */
++static inline int gc550_cmd_init(struct gc550_dev *dev) { return 0; }
++static inline void gc550_cmd_free(struct gc550_dev *dev) {}
++static inline int gc550_video_register(struct gc550_dev *dev) { return 0; }
++static inline void gc550_video_unregister(struct gc550_dev *dev) {}
++static inline void gc550_video_stop_device(struct gc550_dev *dev) {}
++static inline int gc550_audio_register(struct gc550_dev *dev) { return 0; }
++static inline void gc550_audio_unregister(struct gc550_dev *dev) {}
++
++#endif /* _GC550_H_ */
+-- 
+2.56.1
+
