@@ -20,3 +20,7 @@ modules.order
 pkg/
 src/
 *.pkg.tar*
+
+# Linux kernel checkpatch artifacts
+.checkpatch*
+

@@ -34,6 +34,7 @@
 #include <media/videobuf2-vmalloc.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
+#include "gc550-diag.h"
 
 #define GC550_DRIVER_NAME	"gc550"
 #define GC550_DRIVER_VERSION	"0.1.3"
@@ -86,6 +87,9 @@
 #define GC550_NUM_URBS		8
 #define GC550_URB_BUF_SIZE	(512 * 1024) /* 512 KiB per URB chunk */
 #define GC550_FX3_DMA_BUF_SIZE	(16 * 1024)  /* 16 KiB internal FX3 DMA unit */
+#define GC550_PAIR_BUF_SIZE	(2 * GC550_FX3_DMA_BUF_SIZE) /* 32 KiB */
+#define GC550_SWAP_SPAN_LIMIT	(32 * 1024)
+#define GC550_FRAME_SPAN_TOLERANCE	0x4000
 
 /* BT.1120 / FX3 Stream Marker Type Bytes (preceded by 00 FF FF) */
 #define GC550_MARKER_SAV	0xC0 /* Start of Active Video: 00 FF FF C0 */
@@ -171,12 +175,23 @@ struct gc550_dev {
 	struct snd_card *snd_card;
 	struct snd_pcm *snd_pcm;
 	struct snd_pcm_substream *alsa_substream;
+	/* Protects ALSA runtime stream pointers and substream state */
 	spinlock_t alsa_lock;
 	wait_queue_head_t alsa_wait;
 	unsigned int alsa_inflight;
 	bool alsa_disconnected;
 	size_t alsa_hw_ptr;
 	size_t alsa_period_pos;
+
+#ifdef CONFIG_GC550_DIAG
+	/* Passive Diagnostic Subsystem (E1.9 Stage 2A) */
+	struct gc550_diag_ring diag_ring;
+	struct gc550_diag_concurrency diag_concurrency;
+	struct gc550_urb_ctx urb_ctx[GC550_NUM_URBS];
+	atomic64_t diag_submission_counter;
+	u32        diag_session_epoch;
+	struct dentry *debugfs_dir;
+#endif
 };
 
 /* Function Prototypes - gc550-cmd.c */
@@ -197,7 +212,12 @@ int gc550_video_register(struct gc550_dev *dev);
 void gc550_video_unregister(struct gc550_dev *dev);
 void gc550_video_stop_device(struct gc550_dev *dev);
 void gc550_parser_reset(struct gc550_stream_parser *parser);
+#ifdef CONFIG_GC550_DIAG
+void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len,
+			      const struct gc550_dispatch_ctx *dctx);
+#else
 void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len);
+#endif
 
 /* Function Prototypes - gc550-audio.c */
 int gc550_audio_register(struct gc550_dev *dev);

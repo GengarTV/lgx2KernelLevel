@@ -35,10 +35,7 @@
 #include <linux/unaligned.h>
 #include "gc550.h"
 
-#define GC550_PAIR_BUF_SIZE	(2 * GC550_FX3_DMA_BUF_SIZE) /* 32 KiB */
-#define GC550_SWAP_SPAN_LIMIT	(32 * 1024)
 #define GC550_MAX_FRAME_SPAN	(GC550_FRAME_SIZE + 0x4000)
-#define GC550_FRAME_SPAN_TOLERANCE	0x4000
 
 static const u8 gc550_yuyv_black[4] = { 16, 128, 16, 128 };
 
@@ -126,7 +123,13 @@ static void gc550_finish_buffer(struct gc550_dev *dev,
 	vb2_buffer_done(&buf->vb.vb2_buf, state);
 }
 
+#ifdef CONFIG_GC550_DIAG
+static void gc550_abort_video_frame(struct gc550_dev *dev,
+				    const struct gc550_dispatch_ctx *dctx,
+				    u8 term_reason, bool is_pair_buf)
+#else
 static void gc550_abort_video_frame(struct gc550_dev *dev)
+#endif
 {
 	struct gc550_stream_parser *p = &dev->parser;
 	struct gc550_buffer *abort_buf = NULL;
@@ -139,13 +142,25 @@ static void gc550_abort_video_frame(struct gc550_dev *dev)
 	}
 	spin_unlock_irqrestore(&dev->queue_lock, flags);
 
-	if (abort_buf)
+	if (abort_buf) {
+#ifdef CONFIG_GC550_DIAG
+		gc550_diag_emit_frame_complete(dev, dctx, abort_buf,
+					       VB2_BUF_STATE_ERROR,
+					       term_reason, is_pair_buf);
+#endif
 		gc550_finish_buffer(dev, abort_buf, VB2_BUF_STATE_ERROR);
+	}
 
 	p->video_pos = 0;
 }
 
+#ifdef CONFIG_GC550_DIAG
+static void gc550_reserve_video_frame(struct gc550_dev *dev,
+				      const struct gc550_dispatch_ctx *dctx,
+				      bool is_pair_buf)
+#else
 static void gc550_reserve_video_frame(struct gc550_dev *dev)
+#endif
 {
 	struct gc550_stream_parser *p = &dev->parser;
 	struct gc550_buffer *abort_buf = NULL;
@@ -158,13 +173,24 @@ static void gc550_reserve_video_frame(struct gc550_dev *dev)
 	}
 	spin_unlock_irqrestore(&dev->queue_lock, flags);
 
-	if (abort_buf)
+	if (abort_buf) {
+#ifdef CONFIG_GC550_DIAG
+		gc550_diag_emit_frame_complete(dev, dctx, abort_buf,
+					       VB2_BUF_STATE_ERROR,
+					       GC550_TERM_UNCLOSED_SAV_ABORT,
+					       is_pair_buf);
+#endif
 		gc550_finish_buffer(dev, abort_buf, VB2_BUF_STATE_ERROR);
+	}
 
 	p->current_frame_sequence = p->frame_sequence++;
 	p->sav_b0 = p->hdr_buf[0];
 	p->video_pos = 0;
 	p->state = GC550_STATE_VIDEO_DATA;
+
+#ifdef CONFIG_GC550_DIAG
+	gc550_diag_emit_marker_sav(dev, dctx, p->hdr_buf, true, is_pair_buf);
+#endif
 
 	spin_lock_irqsave(&dev->queue_lock, flags);
 	if (!list_empty(&dev->buf_list)) {
@@ -202,7 +228,13 @@ static void gc550_append_video_bytes(struct gc550_dev *dev,
 				     GC550_MAX_FRAME_SPAN + 1);
 }
 
+#ifdef CONFIG_GC550_DIAG
+static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0,
+				       const struct gc550_dispatch_ctx *dctx,
+				       bool is_pair_buf)
+#else
 static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
+#endif
 {
 	struct gc550_stream_parser *p = &dev->parser;
 	struct gc550_buffer *buf = NULL;
@@ -226,16 +258,31 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 	 */
 	if (p->video_pos <= GC550_SWAP_SPAN_LIMIT && eav_c0 != p->sav_b0) {
 		p->swap_votes++;
+#ifdef CONFIG_GC550_DIAG
+		gc550_diag_emit_swap_vote(dev, dctx, p->sav_b0, eav_c0,
+					  p->swap_votes, is_pair_buf);
+#endif
 		if (p->swap_votes >= 2) {
 			p->swap_mode = !p->swap_mode;
 			p->swap_votes = 0;
 			p->pair_pos = 0;
+#ifdef CONFIG_GC550_DIAG
+			gc550_diag_emit_swap_toggle(dev, dctx, !p->swap_mode,
+						    p->swap_mode, is_pair_buf);
+#endif
 			dev_info_ratelimited(&dev->intf->dev,
 					     "FX3 16 KiB DMA buffer order switched to %s\n",
 					     p->swap_mode ? "SWAPPED" : "NORMAL");
 		}
-		if (buf)
+		if (buf) {
+#ifdef CONFIG_GC550_DIAG
+			gc550_diag_emit_frame_complete(dev, dctx, buf,
+						       VB2_BUF_STATE_ERROR,
+						       GC550_TERM_SWAP_CANDIDATE_ERROR,
+						       is_pair_buf);
+#endif
 			gc550_finish_buffer(dev, buf, VB2_BUF_STATE_ERROR);
+		}
 		p->video_pos = 0;
 		return;
 	}
@@ -250,8 +297,15 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 		      p->video_pos <= frame_size + GC550_FRAME_SPAN_TOLERANCE);
 
 	if (!valid_span) {
-		if (buf)
+		if (buf) {
+#ifdef CONFIG_GC550_DIAG
+			gc550_diag_emit_frame_complete(dev, dctx, buf,
+						       VB2_BUF_STATE_ERROR,
+						       GC550_TERM_INVALID_SPAN_ERROR,
+						       is_pair_buf);
+#endif
 			gc550_finish_buffer(dev, buf, VB2_BUF_STATE_ERROR);
+		}
 		p->video_pos = 0;
 		return;
 	}
@@ -265,6 +319,12 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 					vbuf[i] = gc550_yuyv_black[i & 3];
 		}
 
+#ifdef CONFIG_GC550_DIAG
+		gc550_diag_emit_frame_complete(dev, dctx, buf,
+					       VB2_BUF_STATE_DONE,
+					       GC550_TERM_NORMAL_DONE,
+					       is_pair_buf);
+#endif
 		gc550_finish_buffer(dev, buf, VB2_BUF_STATE_DONE);
 	}
 
@@ -306,8 +366,15 @@ static void gc550_handle_marker(struct gc550_dev *dev, u8 marker_type)
 /**
  * gc550_parse_ordered_bytes - Core byte-stream parser with cross-URB marker straddle support
  */
+#ifdef CONFIG_GC550_DIAG
+static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
+				      const u8 *data, size_t len,
+				      const struct gc550_dispatch_ctx *dctx,
+				      bool is_pair_buf)
+#else
 static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 				      const u8 *data, size_t len)
+#endif
 {
 	static const u8 prefix_bytes[3] = { 0x00, 0xff, 0xff };
 	struct gc550_stream_parser *p = &dev->parser;
@@ -319,11 +386,24 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 			p->hdr_buf[p->hdr_pos++] = data[i++];
 			if (p->hdr_pos == 4) {
 				if (gc550_sav_hdr_valid(p->hdr_buf)) {
+#ifdef CONFIG_GC550_DIAG
+					gc550_reserve_video_frame(dev, dctx, is_pair_buf);
+#else
 					gc550_reserve_video_frame(dev);
+#endif
 				} else {
 					p->desync_count++;
+#ifdef CONFIG_GC550_DIAG
+					gc550_diag_emit_marker_sav(dev, dctx, p->hdr_buf, false, is_pair_buf);
+					gc550_diag_emit_desync(dev, dctx, GC550_DESYNC_SAV_CHECKSUM,
+							       GC550_MARKER_SAV, p->hdr_buf[0], is_pair_buf);
+#endif
 					p->state = GC550_STATE_IDLE;
+#ifdef CONFIG_GC550_DIAG
+					gc550_abort_video_frame(dev, dctx, GC550_TERM_PARSER_ABORT_ERROR, is_pair_buf);
+#else
 					gc550_abort_video_frame(dev);
+#endif
 				}
 			}
 			continue;
@@ -332,14 +412,35 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 			p->hdr_buf[p->hdr_pos++] = data[i++];
 			if (p->hdr_pos == 5) {
 				if (gc550_eav_hdr_valid(p->hdr_buf)) {
-					if (p->hdr_buf[0] != p->sav_b0)
+#ifdef CONFIG_GC550_DIAG
+					gc550_diag_emit_marker_eav(dev, dctx, p->hdr_buf, true, is_pair_buf);
+#endif
+					if (p->hdr_buf[0] != p->sav_b0) {
 						p->desync_count++;
+#ifdef CONFIG_GC550_DIAG
+						gc550_diag_emit_desync(dev, dctx, GC550_DESYNC_SEQ_MISMATCH,
+								       GC550_MARKER_EAV, p->hdr_buf[0], is_pair_buf);
+#endif
+					}
+#ifdef CONFIG_GC550_DIAG
+					gc550_complete_video_frame(dev, p->hdr_buf[0], dctx, is_pair_buf);
+#else
 					gc550_complete_video_frame(dev, p->hdr_buf[0]);
+#endif
 					p->state = GC550_STATE_POST_EAV;
 				} else {
 					p->desync_count++;
+#ifdef CONFIG_GC550_DIAG
+					gc550_diag_emit_marker_eav(dev, dctx, p->hdr_buf, false, is_pair_buf);
+					gc550_diag_emit_desync(dev, dctx, GC550_DESYNC_EAV_CHECKSUM,
+							       GC550_MARKER_EAV, p->hdr_buf[0], is_pair_buf);
+#endif
 					p->state = GC550_STATE_IDLE;
+#ifdef CONFIG_GC550_DIAG
+					gc550_abort_video_frame(dev, dctx, GC550_TERM_PARSER_ABORT_ERROR, is_pair_buf);
+#else
 					gc550_abort_video_frame(dev);
+#endif
 				}
 			}
 			continue;
@@ -348,6 +449,9 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 			p->hdr_buf[p->hdr_pos++] = data[i++];
 			if (p->hdr_pos == 4) {
 				p->audio_rem = get_unaligned_be32(p->hdr_buf);
+#ifdef CONFIG_GC550_DIAG
+				gc550_diag_emit_audio_header(dev, dctx, p->hdr_buf, p->audio_rem, is_pair_buf);
+#endif
 				if (p->audio_rem > 0 && p->audio_rem <= 65536)
 					p->state = GC550_STATE_AUDIO_DATA;
 				else
@@ -441,7 +545,8 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 			if (!zero)
 				break;
 
-			i = (size_t)(zero - data) + 1;
+			i = (size_t)(zero - data);
+			i++;
 			p->marker_stage = 1;
 		}
 	}
@@ -450,12 +555,21 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 /**
  * gc550_parse_stream_chunk - Top-level entry for Bulk IN 0x83 data with 16 KiB swap support
  */
+#ifdef CONFIG_GC550_DIAG
+void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len,
+			      const struct gc550_dispatch_ctx *dctx)
+#else
 void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len)
+#endif
 {
 	struct gc550_stream_parser *p = &dev->parser;
 
 	if (!p->swap_mode || !p->pair_buf) {
+#ifdef CONFIG_GC550_DIAG
+		gc550_parse_ordered_bytes(dev, data, len, dctx, false);
+#else
 		gc550_parse_ordered_bytes(dev, data, len);
+#endif
 		return;
 	}
 
@@ -474,12 +588,30 @@ void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len)
 
 		if (p->pair_pos == GC550_PAIR_BUF_SIZE) {
 			p->pair_pos = 0;
+
+			/* Dispatch Half 1 first */
+#ifdef CONFIG_GC550_DIAG
+			gc550_parse_ordered_bytes(dev,
+						  p->pair_buf + GC550_FX3_DMA_BUF_SIZE,
+						  GC550_FX3_DMA_BUF_SIZE,
+						  dctx, true);
+#else
 			gc550_parse_ordered_bytes(dev,
 						  p->pair_buf + GC550_FX3_DMA_BUF_SIZE,
 						  GC550_FX3_DMA_BUF_SIZE);
+#endif
+
+			/* Dispatch Half 0 second */
+#ifdef CONFIG_GC550_DIAG
+			gc550_parse_ordered_bytes(dev,
+						  p->pair_buf,
+						  GC550_FX3_DMA_BUF_SIZE,
+						  dctx, true);
+#else
 			gc550_parse_ordered_bytes(dev,
 						  p->pair_buf,
 						  GC550_FX3_DMA_BUF_SIZE);
+#endif
 		}
 	}
 }
@@ -487,16 +619,56 @@ void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len)
 /* USB Bulk Stream URB Completion Callback */
 static void gc550_urb_complete(struct urb *urb)
 {
+#ifdef CONFIG_GC550_DIAG
+	struct gc550_urb_ctx *ctx = urb->context;
+	struct gc550_dev *dev = ctx ? ctx->dev : NULL;
+	u16 slot_index = ctx ? ctx->slot_index : 0;
+	u64 sub_id = ctx ? ctx->submission_attempt_id : 0;
+	u64 entry_seq = 0;
+	int active = 0, max = 0;
+	u64 start_time = 0;
+	u16 cpu_id = 0;
+	struct gc550_dispatch_ctx dctx;
+#else
 	struct gc550_dev *dev = urb->context;
+#endif
 	unsigned long flags;
 	int ret;
+
+	if (!dev)
+		return;
+
+#ifdef CONFIG_GC550_DIAG
+	active = atomic_inc_return(&dev->diag_concurrency.active_callbacks);
+	max = atomic_read(&dev->diag_concurrency.max_simultaneous);
+	while (active > max && !atomic_try_cmpxchg(&dev->diag_concurrency.max_simultaneous, &max, active))
+		;
+	entry_seq = (u64)atomic64_inc_return(&dev->diag_concurrency.callback_entry_seq);
+	start_time = ktime_get_raw_ns();
+	cpu_id = (u16)raw_smp_processor_id();
+
+	dctx.submission_generation = sub_id;
+	dctx.completion_seq = entry_seq;
+	dctx.slot_index = slot_index;
+	dctx.cpu_id = cpu_id;
+	dctx.active_callbacks = (u8)min(active, 255);
+#endif
 
 	spin_lock_irqsave(&dev->stream_lock, flags);
 	if (!dev->streaming || dev->disconnected) {
 		spin_unlock_irqrestore(&dev->stream_lock, flags);
-		return;
+#ifdef CONFIG_GC550_DIAG
+		gc550_diag_emit_urb_complete(dev, ctx, urb, entry_seq,
+					     active, start_time, cpu_id);
+#endif
+		goto out;
 	}
 	spin_unlock_irqrestore(&dev->stream_lock, flags);
+
+#ifdef CONFIG_GC550_DIAG
+	gc550_diag_emit_urb_complete(dev, ctx, urb, entry_seq,
+				     active, start_time, cpu_id);
+#endif
 
 	switch (urb->status) {
 	case 0:
@@ -506,21 +678,32 @@ static void gc550_urb_complete(struct urb *urb)
 					    urb->actual_length,
 					    dev->parser.video_pos,
 					    dev->parser.state);
+#ifdef CONFIG_GC550_DIAG
+			gc550_parse_stream_chunk(dev, urb->transfer_buffer,
+						 urb->actual_length, &dctx);
+#else
 			gc550_parse_stream_chunk(dev, urb->transfer_buffer,
 						 urb->actual_length);
+#endif
 		}
 		break;
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
-		return;
+		goto out;
 	default:
 		dev_warn_ratelimited(&dev->intf->dev,
 				     "Stream URB status: %d (actual_len=%d)\n",
 				     urb->status, urb->actual_length);
 		/* Gap / USB transfer error: reset parser state */
+#ifdef CONFIG_GC550_DIAG
+		gc550_abort_video_frame(dev, &dctx, GC550_TERM_PARSER_ABORT_ERROR, false);
+		gc550_parser_reset(&dev->parser);
+		gc550_diag_emit_parser_reset(dev, &dctx, GC550_RESET_USB_TRANSFER_ERROR);
+#else
 		gc550_abort_video_frame(dev);
 		gc550_parser_reset(&dev->parser);
+#endif
 		break;
 	}
 
@@ -529,14 +712,32 @@ static void gc550_urb_complete(struct urb *urb)
 	 * here; disconnect/STREAMOFF takes the same lock before killing URBs.
 	 */
 	spin_lock_irqsave(&dev->stream_lock, flags);
-	if (dev->streaming && !dev->disconnected)
+	if (dev->streaming && !dev->disconnected) {
+#ifdef CONFIG_GC550_DIAG
+		sub_id = (u64)atomic64_inc_return(&dev->diag_submission_counter);
+		if (ctx)
+			ctx->submission_attempt_id = sub_id;
+#endif
 		ret = usb_submit_urb(urb, GFP_ATOMIC);
-	else
+	} else {
 		ret = -ESHUTDOWN;
+	}
 	spin_unlock_irqrestore(&dev->stream_lock, flags);
-	if (ret < 0 && ret != -ENODEV && ret != -ESHUTDOWN)
+	if (ret < 0 && ret != -ENODEV && ret != -ESHUTDOWN) {
+#ifdef CONFIG_GC550_DIAG
+		gc550_diag_emit_submission_failure(dev, slot_index, sub_id, ret);
+#endif
 		dev_err_ratelimited(&dev->intf->dev,
 				    "Failed to resubmit stream URB: %d\n", ret);
+	}
+
+out:
+#ifdef CONFIG_GC550_DIAG
+	atomic_dec(&dev->diag_concurrency.active_callbacks);
+	atomic64_inc(&dev->diag_concurrency.callback_exit_seq);
+#else
+	;
+#endif
 }
 
 static void gc550_free_stream_urbs(struct gc550_dev *dev)
@@ -578,10 +779,21 @@ static int gc550_alloc_stream_urbs(struct gc550_dev *dev)
 			return -ENOMEM;
 		}
 
+#ifdef CONFIG_GC550_DIAG
+		dev->urb_ctx[i].dev = dev;
+		dev->urb_ctx[i].slot_index = (u16)i;
+		dev->urb_ctx[i].submission_attempt_id = 0;
+
+		usb_fill_bulk_urb(dev->urbs[i], dev->udev,
+				  usb_rcvbulkpipe(dev->udev, GC550_EP_STREAM_IN),
+				  dev->urb_bufs[i], GC550_URB_BUF_SIZE,
+				  gc550_urb_complete, &dev->urb_ctx[i]);
+#else
 		usb_fill_bulk_urb(dev->urbs[i], dev->udev,
 				  usb_rcvbulkpipe(dev->udev, GC550_EP_STREAM_IN),
 				  dev->urb_bufs[i], GC550_URB_BUF_SIZE,
 				  gc550_urb_complete, dev);
+#endif
 	}
 
 	return 0;
@@ -590,10 +802,20 @@ static int gc550_alloc_stream_urbs(struct gc550_dev *dev)
 static int gc550_submit_stream_urbs(struct gc550_dev *dev)
 {
 	int i, ret;
+#ifdef CONFIG_GC550_DIAG
+	u64 sub_id;
+#endif
 
 	for (i = 0; i < GC550_NUM_URBS; i++) {
+#ifdef CONFIG_GC550_DIAG
+		sub_id = (u64)atomic64_inc_return(&dev->diag_submission_counter);
+		dev->urb_ctx[i].submission_attempt_id = sub_id;
+#endif
 		ret = usb_submit_urb(dev->urbs[i], GFP_KERNEL);
 		if (ret < 0) {
+#ifdef CONFIG_GC550_DIAG
+			gc550_diag_emit_submission_failure(dev, (u16)i, sub_id, ret);
+#endif
 			dev_err(&dev->intf->dev,
 				"Failed to submit stream URB %d: %d\n", i, ret);
 			return ret;
@@ -656,16 +878,24 @@ static void gc550_return_all_buffers(struct gc550_dev *dev,
 				     enum vb2_buffer_state state)
 {
 	struct gc550_buffer *buf, *node;
+	struct gc550_buffer *cur = NULL;
 	LIST_HEAD(done_list);
 	unsigned long flags;
 
 	spin_lock_irqsave(&dev->queue_lock, flags);
 	if (dev->cur_buf) {
+		cur = dev->cur_buf;
 		list_add_tail(&dev->cur_buf->list, &done_list);
 		dev->cur_buf = NULL;
 	}
 	list_splice_tail_init(&dev->buf_list, &done_list);
 	spin_unlock_irqrestore(&dev->queue_lock, flags);
+
+#ifdef CONFIG_GC550_DIAG
+	if (cur && state == VB2_BUF_STATE_ERROR)
+		gc550_diag_emit_frame_complete(dev, NULL, cur, state,
+					       GC550_TERM_STREAMOFF_TEARDOWN, false);
+#endif
 
 	list_for_each_entry_safe(buf, node, &done_list, list) {
 		list_del_init(&buf->list);
@@ -678,6 +908,10 @@ static void gc550_stop_stream_resources(struct gc550_dev *dev,
 {
 	unsigned long flags;
 
+#ifdef CONFIG_GC550_DIAG
+	gc550_diag_emit_lifecycle(dev, GC550_EVT_STREAM_STOP_BEGIN);
+#endif
+
 	/* The callback resubmit gate is closed before kill waits for callbacks. */
 	mutex_lock(&dev->stream_mutex);
 	spin_lock_irqsave(&dev->stream_lock, flags);
@@ -687,6 +921,10 @@ static void gc550_stop_stream_resources(struct gc550_dev *dev,
 	mutex_unlock(&dev->stream_mutex);
 
 	gc550_return_all_buffers(dev, state);
+
+#ifdef CONFIG_GC550_DIAG
+	gc550_diag_emit_lifecycle(dev, GC550_EVT_STREAM_STOP_COMPLETE);
+#endif
 }
 
 void gc550_video_stop_device(struct gc550_dev *dev)
@@ -699,6 +937,12 @@ static int gc550_start_streaming(struct vb2_queue *vq, unsigned int count)
 	struct gc550_dev *dev = vb2_get_drv_priv(vq);
 	unsigned long flags;
 	int ret;
+
+#ifdef CONFIG_GC550_DIAG
+	dev->diag_session_epoch++;
+	gc550_diag_emit_lifecycle(dev, GC550_EVT_STREAM_START_BEGIN);
+	gc550_diag_emit_parser_reset(dev, NULL, GC550_RESET_STREAMON);
+#endif
 
 	gc550_parser_reset(&dev->parser);
 	dev->parser.frame_sequence = 0;
@@ -736,10 +980,16 @@ static int gc550_start_streaming(struct vb2_queue *vq, unsigned int count)
 	}
 	mutex_unlock(&dev->stream_mutex);
 
-	if (ret < 0)
+	if (ret < 0) {
 		gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
+		return ret;
+	}
 
-	return ret;
+#ifdef CONFIG_GC550_DIAG
+	gc550_diag_emit_lifecycle(dev, GC550_EVT_STREAM_START_COMPLETE);
+#endif
+
+	return 0;
 }
 
 static void gc550_stop_streaming(struct vb2_queue *vq)
